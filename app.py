@@ -182,7 +182,7 @@ def combine_location_data(carwars_df, tecobi_df, location):
     return final
 
 def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
-    """Create the final formatted Excel file matching 30/30 format with thick borders and totals"""
+    """Create the final formatted Excel file matching 30/30 format with thick RIGHT borders and totals"""
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -191,7 +191,7 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         header_base = {'bold': True, 'text_wrap': True, 'valign': 'vcenter',
                        'align': 'center', 'border': 1, 'bg_color': '#D7D7D7', 'font_size': 10}
         header_format = workbook.add_format(header_base)
-        header_format_thickleft = workbook.add_format({**header_base, 'left': 2})
+        header_format_thickright = workbook.add_format({**header_base, 'right': 2})
 
         location_header_format = workbook.add_format({
             'bold': True, 'align': 'center', 'font_size': 11, 'bg_color': '#B4C6E7', 'border': 1
@@ -200,28 +200,28 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         # Time formats
         time_format = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1})
         time_format_highlight = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1, 'bg_color': '#FFC7CE'})
-        time_format_thickleft = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1, 'left': 2})
-        time_format_highlight_thickleft = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1, 'bg_color': '#FFC7CE', 'left': 2})
+        time_format_thickright = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1, 'right': 2})
+        time_format_highlight_thickright = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1, 'bg_color': '#FFC7CE', 'right': 2})
 
         # Number formats
         number_format = workbook.add_format({'align': 'center', 'border': 1})
         number_format_highlight = workbook.add_format({'align': 'center', 'border': 1, 'bg_color': '#FFC7CE'})
-        number_format_thickleft = workbook.add_format({'align': 'center', 'border': 1, 'left': 2})
-        number_format_highlight_thickleft = workbook.add_format({'align': 'center', 'border': 1, 'bg_color': '#FFC7CE', 'left': 2})
+        number_format_thickright = workbook.add_format({'align': 'center', 'border': 1, 'right': 2})
+        number_format_highlight_thickright = workbook.add_format({'align': 'center', 'border': 1, 'bg_color': '#FFC7CE', 'right': 2})
 
         # Text formats
         text_format = workbook.add_format({'align': 'left', 'border': 1})
         text_format_highlight = workbook.add_format({'align': 'left', 'border': 1, 'bg_color': '#FFC7CE'})
-        text_format_thickleft = workbook.add_format({'align': 'left', 'border': 1, 'left': 2})
-        text_format_highlight_thickleft = workbook.add_format({'align': 'left', 'border': 1, 'bg_color': '#FFC7CE', 'left': 2})
+        text_format_thickright = workbook.add_format({'align': 'left', 'border': 1, 'right': 2})
+        text_format_highlight_thickright = workbook.add_format({'align': 'left', 'border': 1, 'bg_color': '#FFC7CE', 'right': 2})
 
         # Empty format
         empty_format = workbook.add_format({'border': 1})
-        empty_format_thickleft = workbook.add_format({'border': 1, 'left': 2})
+        empty_format_thickright = workbook.add_format({'border': 1, 'right': 2})
 
         # Totals format
         total_number_format = workbook.add_format({'align': 'center', 'border': 1, 'bold': True})
-        total_number_format_thickleft = workbook.add_format({'align': 'center', 'border': 1, 'bold': True, 'left': 2})
+        total_number_format_thickright = workbook.add_format({'align': 'center', 'border': 1, 'bold': True, 'right': 2})
         total_label_format = workbook.add_format({'align': 'left', 'border': 1, 'bold': True})
 
         worksheet = writer.book.add_worksheet('Sheet1')
@@ -256,20 +256,22 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
 
         headers = ['Agent Name', 'Calls', 'Carwars Avg\nTalk Time', 'Tecobi\nTalk Time\n(seconds)', 'Text']
 
-        # Chattanooga header row
+        # Chattanooga header row (thick RIGHT on column E)
         for i, h in enumerate(headers):
-            fmt = header_format_thickleft if i == 4 else header_format  # thick left on column E
+            fmt = header_format_thickright if i == 4 else header_format
             worksheet.write(1, i, h, fmt)
 
-        # Cleveland header row
+        # Cleveland header row (thick RIGHT on column J)
         for i, h in enumerate(headers):
             base_col = 5 + i
-            fmt = header_format_thickleft if base_col == 9 else header_format  # thick left on column J
+            fmt = header_format_thickright if base_col == 9 else header_format
             worksheet.write(1, base_col, h, fmt)
 
-        # Dalton header row
+        # Dalton header row (thick RIGHT on column O)
         for i, h in enumerate(headers):
-            worksheet.write(1, 10 + i, h, header_format)
+            base_col = 10 + i
+            fmt = header_format_thickright if base_col == 14 else header_format
+            worksheet.write(1, base_col, h, fmt)
 
         # Rows
         max_rows = max(len(chattanooga_data), len(cleveland_data), len(dalton_data))
@@ -277,69 +279,57 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         for row_idx in range(max_rows):
             excel_row = row_idx + 2  # data starts on Excel row 3 (0-indexed -> 2)
 
-            def write_block(base_col, rowdata, thickleft_cols=None):
-                """Write one 5-col block; thickleft_cols are absolute excel columns needing left=2."""
-                thickleft_cols = thickleft_cols or set()
+            def write_block(base_col, rowdata, thickright_cols=None):
+                """Write one 5-col block; thickright_cols are absolute excel columns needing right=2."""
+                thickright_cols = thickright_cols or set()
 
                 # Name format
                 name_fmt = text_format_highlight if rowdata['Name_Highlight'] else text_format
-                if base_col in thickleft_cols:  # Only applies if name column is thick-left (not the case here)
-                    name_fmt = text_format_highlight_thickleft if rowdata['Name_Highlight'] else text_format_thickleft
 
-                # Calls
+                # Calls format (highlight only if Calls < 30)
                 calls_fmt = number_format_highlight if rowdata['Calls_Highlight'] else number_format
 
-                # Time formats (never highlighted per request)
+                # Time formats
                 carwars_time_fmt = time_format
-                tecobi_time_fmt = number_format  # seconds, keep numeric
+                tecobi_time_fmt = number_format  # seconds as plain number
 
-                # Text
+                # Text format (highlight only if Text < 30)
                 text_num_fmt = number_format_highlight if rowdata['Text_Highlight'] else number_format
 
-                # Adjust thick-left for E or J specifically
-                # Columns within the block: 0=Name, 1=Calls, 2=Carwars Time, 3=Tecobi Time, 4=Text
-                # Absolute columns for each block's 4th index:
+                # Apply thick RIGHT on the Text column for E, J, O
                 abs_text_col = base_col + 4
+                if abs_text_col in thickright_cols:
+                    text_num_fmt = number_format_highlight_thickright if rowdata['Text_Highlight'] else number_format_thickright
 
-                # If the Name column itself needs thick-left (not required here), handle above.
-
-                # If Calls column needs thick-left (not required), you could mirror logic here.
-
-                # If Time columns need thick-left (not required), skip.
-
-                # Apply thick-left ONLY on the Text column for E and J blocks
-                if abs_text_col in thickleft_cols:
-                    text_num_fmt = number_format_highlight_thickleft if rowdata['Text_Highlight'] else number_format_thickleft
-
-                # Write cells
                 worksheet.write(excel_row, base_col + 0, rowdata['Agent Name'], name_fmt)
                 worksheet.write(excel_row, base_col + 1, int(rowdata['Calls']), calls_fmt)
                 worksheet.write(excel_row, base_col + 2, rowdata['Carwars Avg Talk Time'], carwars_time_fmt)
                 worksheet.write(excel_row, base_col + 3, rowdata['Tecobi Talk Time'], tecobi_time_fmt)
                 worksheet.write(excel_row, base_col + 4, int(rowdata['Text']), text_num_fmt)
 
-            # Chattanooga (block base_col=0); thick-left on column E -> absolute col 4
+            # Chattanooga (block base_col=0); thick RIGHT on column E -> absolute col 4
             if row_idx < len(chattanooga_data):
-                write_block(0, chattanooga_data.iloc[row_idx], thickleft_cols={4})
+                write_block(0, chattanooga_data.iloc[row_idx], thickright_cols={4})
             else:
                 for c in range(0, 5):
-                    fmt = empty_format_thickleft if c == 4 else empty_format  # thick-left on E
+                    fmt = empty_format_thickright if c == 4 else empty_format  # thick-right on E
                     worksheet.write(excel_row, c, '', fmt)
 
-            # Cleveland (block base_col=5); thick-left on column J -> absolute col 9
+            # Cleveland (block base_col=5); thick RIGHT on column J -> absolute col 9
             if row_idx < len(cleveland_data):
-                write_block(5, cleveland_data.iloc[row_idx], thickleft_cols={9})
+                write_block(5, cleveland_data.iloc[row_idx], thickright_cols={9})
             else:
                 for c in range(5, 10):
-                    fmt = empty_format_thickleft if c == 9 else empty_format  # thick-left on J
+                    fmt = empty_format_thickright if c == 9 else empty_format  # thick-right on J
                     worksheet.write(excel_row, c, '', fmt)
 
-            # Dalton (block base_col=10); no thick-left requested
+            # Dalton (block base_col=10); thick RIGHT on column O -> absolute col 14
             if row_idx < len(dalton_data):
-                write_block(10, dalton_data.iloc[row_idx])
+                write_block(10, dalton_data.iloc[row_idx], thickright_cols={14})
             else:
                 for c in range(10, 15):
-                    worksheet.write(excel_row, c, '', empty_format)
+                    fmt = empty_format_thickright if c == 14 else empty_format  # thick-right on O
+                    worksheet.write(excel_row, c, '', fmt)
 
         # Totals row (after last data row)
         last_data_row = (max_rows - 1) + 2 if max_rows > 0 else 1  # last data row index
@@ -351,23 +341,21 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         worksheet.write(totals_row, 10, "Totals", total_label_format)
 
         # Helper to write a SUM in a column (col_letter, start_row=3 to end_row=last_data_row+1 in Excel terms)
-        def write_sum(col_idx, thick_left=False):
-            # Convert 0-indexed row/col to Excel A1 references
+        def write_sum(col_idx, thick_right=False):
             col_letter = xlsx_col_letter(col_idx)
-            # Data range starts at row 3 (Excel 1-based)
             start_row_excel = 3
             end_row_excel = last_data_row + 1  # convert 0-indexed to 1-indexed
             formula = f"=SUM({col_letter}{start_row_excel}:{col_letter}{end_row_excel})"
-            fmt = total_number_format_thickleft if thick_left else total_number_format
+            fmt = total_number_format_thickright if thick_right else total_number_format
             worksheet.write_formula(totals_row, col_idx, formula, fmt)
 
         # Write sums for requested columns: B, E, G, J, L, O
-        write_sum(1, thick_left=False)  # B
-        write_sum(4, thick_left=True)   # E (thick left)
-        write_sum(6, thick_left=False)  # G
-        write_sum(9, thick_left=True)   # J (thick left)
-        write_sum(11, thick_left=False) # L
-        write_sum(14, thick_left=False) # O
+        write_sum(1, thick_right=False)   # B
+        write_sum(4, thick_right=True)    # E (thick RIGHT)
+        write_sum(6, thick_right=False)   # G
+        write_sum(9, thick_right=True)    # J (thick RIGHT)
+        write_sum(11, thick_right=False)  # L
+        write_sum(14, thick_right=True)   # O (thick RIGHT)
 
         worksheet.freeze_panes(2, 0)
         worksheet.set_landscape()
