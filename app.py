@@ -35,11 +35,11 @@ def parse_time_to_excel(time_str):
         return 0
     if isinstance(time_str, (int, float)):
         return float(time_str)
-    time_str = str(time_str).strip()
-    if ':' not in time_str:
+    s = str(time_str).strip()
+    if ':' not in s:
         return 0
     try:
-        parts = time_str.split(':')
+        parts = s.split(':')
         if len(parts) == 2:  # MM:SS
             minutes = int(parts[0]); seconds = int(parts[1])
             total_hours = (minutes * 60 + seconds) / 3600
@@ -64,19 +64,27 @@ def process_carwars_file_v2(df, location, exclude_list=None):
     """Process Carwars file and extract needed columns"""
     df.columns = df.columns.str.strip()
 
+    # Trim and normalize Agent Name if present
+    if 'Agent Name' in df.columns:
+        df['Agent Name'] = df['Agent Name'].astype(str).str.strip()
+    else:
+        df['Agent Name'] = ""
+
+    # Filter out "total" rows (case-insensitive)
+    df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
+
     # Filter out excluded agents (case-insensitive, partial match)
-    if exclude_list and 'Agent Name' in df.columns:
+    if exclude_list:
         for name in exclude_list:
-            df = df[~df['Agent Name'].astype(str).str.lower().str.contains(name.lower(), na=False)]
+            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
 
     processed = pd.DataFrame()
-    processed['Agent Name'] = df.get('Agent Name', '').astype(str).str.strip()
+    processed['Agent Name'] = df['Agent Name']
 
     processed['Carwars_Unique_Outbound'] = pd.to_numeric(df.get('Unique Outbound', 0), errors='coerce').fillna(0)
 
-    avg_talk_col = df.get('Avg Talk Time', None)
-    if avg_talk_col is not None:
-        processed['Carwars_Avg_Talk_Time'] = avg_talk_col.apply(parse_time_to_excel)
+    if 'Avg Talk Time' in df.columns:
+        processed['Carwars_Avg_Talk_Time'] = df['Avg Talk Time'].apply(parse_time_to_excel)
     else:
         processed['Carwars_Avg_Talk_Time'] = 0
 
@@ -96,17 +104,20 @@ def process_tecobi_file(df, location, exclude_list=None):
     # Build 'Agent Name' if first/last present; else try to use an existing name field
     if 'first_name' in df.columns and 'last_name' in df.columns:
         df['Agent Name'] = (df['first_name'].astype(str).str.strip() + ' ' + df['last_name'].astype(str).str.strip()).str.strip()
-    elif 'Agent Name' not in df.columns:
-        # fallback – try 'name'
-        if 'name' in df.columns:
-            df['Agent Name'] = df['name'].astype(str).str.strip()
-        else:
-            df['Agent Name'] = ""
+    elif 'Agent Name' in df.columns:
+        df['Agent Name'] = df['Agent Name'].astype(str).str.strip()
+    elif 'name' in df.columns:
+        df['Agent Name'] = df['name'].astype(str).str.strip()
+    else:
+        df['Agent Name'] = ""
+
+    # Filter out "total" rows (case-insensitive)
+    df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
 
     # Filter out excluded agents
     if exclude_list:
         for name in exclude_list:
-            df = df[~df['Agent Name'].astype(str).str.lower().str.contains(name.lower(), na=False)]
+            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
 
     # Tecobi talk time
     if 'avg_outbound_call_duration' in df.columns:
@@ -117,7 +128,7 @@ def process_tecobi_file(df, location, exclude_list=None):
         talk_time = seconds / calls
 
     processed = pd.DataFrame()
-    processed['Agent Name'] = df['Agent Name'].astype(str).str.strip()
+    processed['Agent Name'] = df['Agent Name']
     processed['Tecobi_Outbound_Calls'] = pd.to_numeric(df.get('outbound_calls', 0), errors='coerce').fillna(0)
     processed['Tecobi_Talk_Time'] = talk_time
     processed['Tecobi_External_SMS'] = pd.to_numeric(df.get('external_sms', 0), errors='coerce').fillna(0)
@@ -151,42 +162,67 @@ def combine_location_data(carwars_df, tecobi_df, location):
     combined['Calls'] = combined.get('Carwars_Unique_Outbound', 0) + combined.get('Tecobi_Outbound_Calls', 0)
     combined['Text'] = combined.get('Carwars_OB_Text', 0) + combined.get('Tecobi_External_SMS', 0)
 
-    combined['Needs_Highlight'] = (combined['Calls'] < 30) | (combined['Text'] < 30)
-
+    # Final table
     final = pd.DataFrame({
         'Agent Name': combined['Agent Name'],
         'Calls': combined['Calls'].astype(int),
         'Carwars Avg Talk Time': combined.get('Carwars_Avg_Talk_Time', 0),
         'Tecobi Talk Time': combined.get('Tecobi_Talk_Time', 0),
-        'Text': combined['Text'].astype(int),
-        'Needs_Highlight': combined['Needs_Highlight']
+        'Text': combined['Text'].astype(int)
     })
 
     # Sort by first name
     final['First_Name'] = final['Agent Name'].apply(get_first_name)
     final = final.sort_values('First_Name', na_position='last').drop(columns=['First_Name'])
+
+    # Boolean flags for highlighting logic (used only during write)
+    final['Name_Highlight'] = (final['Calls'] < 30) | (final['Text'] < 30)
+    final['Calls_Highlight'] = (final['Calls'] < 30)
+    final['Text_Highlight'] = (final['Text'] < 30)
     return final
 
 def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
-    """Create the final formatted Excel file matching 30/30 format"""
+    """Create the final formatted Excel file matching 30/30 format with thick borders and totals"""
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
 
-        header_format = workbook.add_format({
-            'bold': True, 'text_wrap': True, 'valign': 'vcenter',
-            'align': 'center', 'border': 1, 'bg_color': '#D7D7D7', 'font_size': 10
-        })
+        # Base formats
+        header_base = {'bold': True, 'text_wrap': True, 'valign': 'vcenter',
+                       'align': 'center', 'border': 1, 'bg_color': '#D7D7D7', 'font_size': 10}
+        header_format = workbook.add_format(header_base)
+        header_format_thickleft = workbook.add_format({**header_base, 'left': 2})
+
         location_header_format = workbook.add_format({
             'bold': True, 'align': 'center', 'font_size': 11, 'bg_color': '#B4C6E7', 'border': 1
         })
+
+        # Time formats
         time_format = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1})
         time_format_highlight = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1, 'bg_color': '#FFC7CE'})
+        time_format_thickleft = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1, 'left': 2})
+        time_format_highlight_thickleft = workbook.add_format({'num_format': '[h]:mm:ss', 'align': 'center', 'border': 1, 'bg_color': '#FFC7CE', 'left': 2})
+
+        # Number formats
         number_format = workbook.add_format({'align': 'center', 'border': 1})
         number_format_highlight = workbook.add_format({'align': 'center', 'border': 1, 'bg_color': '#FFC7CE'})
+        number_format_thickleft = workbook.add_format({'align': 'center', 'border': 1, 'left': 2})
+        number_format_highlight_thickleft = workbook.add_format({'align': 'center', 'border': 1, 'bg_color': '#FFC7CE', 'left': 2})
+
+        # Text formats
         text_format = workbook.add_format({'align': 'left', 'border': 1})
         text_format_highlight = workbook.add_format({'align': 'left', 'border': 1, 'bg_color': '#FFC7CE'})
+        text_format_thickleft = workbook.add_format({'align': 'left', 'border': 1, 'left': 2})
+        text_format_highlight_thickleft = workbook.add_format({'align': 'left', 'border': 1, 'bg_color': '#FFC7CE', 'left': 2})
+
+        # Empty format
         empty_format = workbook.add_format({'border': 1})
+        empty_format_thickleft = workbook.add_format({'border': 1, 'left': 2})
+
+        # Totals format
+        total_number_format = workbook.add_format({'align': 'center', 'border': 1, 'bold': True})
+        total_number_format_thickleft = workbook.add_format({'align': 'center', 'border': 1, 'bold': True, 'left': 2})
+        total_label_format = workbook.add_format({'align': 'left', 'border': 1, 'bold': True})
 
         worksheet = writer.book.add_worksheet('Sheet1')
 
@@ -219,48 +255,119 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         worksheet.merge_range('K1:O1', 'Dalton', location_header_format)
 
         headers = ['Agent Name', 'Calls', 'Carwars Avg\nTalk Time', 'Tecobi\nTalk Time\n(seconds)', 'Text']
+
+        # Chattanooga header row
         for i, h in enumerate(headers):
-            worksheet.write(1, i, h, header_format)
-            worksheet.write(1, 5 + i, h, header_format)
+            fmt = header_format_thickleft if i == 4 else header_format  # thick left on column E
+            worksheet.write(1, i, h, fmt)
+
+        # Cleveland header row
+        for i, h in enumerate(headers):
+            base_col = 5 + i
+            fmt = header_format_thickleft if base_col == 9 else header_format  # thick left on column J
+            worksheet.write(1, base_col, h, fmt)
+
+        # Dalton header row
+        for i, h in enumerate(headers):
             worksheet.write(1, 10 + i, h, header_format)
 
         # Rows
         max_rows = max(len(chattanooga_data), len(cleveland_data), len(dalton_data))
+
         for row_idx in range(max_rows):
-            excel_row = row_idx + 2
+            excel_row = row_idx + 2  # data starts on Excel row 3 (0-indexed -> 2)
 
-            # Helper to write a block (5 columns)
-            def write_block(base_col, rowdata):
-                needs = rowdata['Needs_Highlight']
-                name_fmt = text_format_highlight if needs else text_format
-                num_fmt = number_format_highlight if needs else number_format
-                t_fmt = time_format_highlight if needs else time_format
+            def write_block(base_col, rowdata, thickleft_cols=None):
+                """Write one 5-col block; thickleft_cols are absolute excel columns needing left=2."""
+                thickleft_cols = thickleft_cols or set()
+
+                # Name format
+                name_fmt = text_format_highlight if rowdata['Name_Highlight'] else text_format
+                if base_col in thickleft_cols:  # Only applies if name column is thick-left (not the case here)
+                    name_fmt = text_format_highlight_thickleft if rowdata['Name_Highlight'] else text_format_thickleft
+
+                # Calls
+                calls_fmt = number_format_highlight if rowdata['Calls_Highlight'] else number_format
+
+                # Time formats (never highlighted per request)
+                carwars_time_fmt = time_format
+                tecobi_time_fmt = number_format  # seconds, keep numeric
+
+                # Text
+                text_num_fmt = number_format_highlight if rowdata['Text_Highlight'] else number_format
+
+                # Adjust thick-left for E or J specifically
+                # Columns within the block: 0=Name, 1=Calls, 2=Carwars Time, 3=Tecobi Time, 4=Text
+                # Absolute columns for each block's 4th index:
+                abs_text_col = base_col + 4
+
+                # If the Name column itself needs thick-left (not required here), handle above.
+
+                # If Calls column needs thick-left (not required), you could mirror logic here.
+
+                # If Time columns need thick-left (not required), skip.
+
+                # Apply thick-left ONLY on the Text column for E and J blocks
+                if abs_text_col in thickleft_cols:
+                    text_num_fmt = number_format_highlight_thickleft if rowdata['Text_Highlight'] else number_format_thickleft
+
+                # Write cells
                 worksheet.write(excel_row, base_col + 0, rowdata['Agent Name'], name_fmt)
-                worksheet.write(excel_row, base_col + 1, rowdata['Calls'], num_fmt)
-                worksheet.write(excel_row, base_col + 2, rowdata['Carwars Avg Talk Time'], t_fmt)
-                worksheet.write(excel_row, base_col + 3, rowdata['Tecobi Talk Time'], num_fmt)
-                worksheet.write(excel_row, base_col + 4, rowdata['Text'], num_fmt)
+                worksheet.write(excel_row, base_col + 1, int(rowdata['Calls']), calls_fmt)
+                worksheet.write(excel_row, base_col + 2, rowdata['Carwars Avg Talk Time'], carwars_time_fmt)
+                worksheet.write(excel_row, base_col + 3, rowdata['Tecobi Talk Time'], tecobi_time_fmt)
+                worksheet.write(excel_row, base_col + 4, int(rowdata['Text']), text_num_fmt)
 
-            # Chattanooga
+            # Chattanooga (block base_col=0); thick-left on column E -> absolute col 4
             if row_idx < len(chattanooga_data):
-                write_block(0, chattanooga_data.iloc[row_idx])
+                write_block(0, chattanooga_data.iloc[row_idx], thickleft_cols={4})
             else:
                 for c in range(0, 5):
-                    worksheet.write(excel_row, c, '', empty_format)
+                    fmt = empty_format_thickleft if c == 4 else empty_format  # thick-left on E
+                    worksheet.write(excel_row, c, '', fmt)
 
-            # Cleveland
+            # Cleveland (block base_col=5); thick-left on column J -> absolute col 9
             if row_idx < len(cleveland_data):
-                write_block(5, cleveland_data.iloc[row_idx])
+                write_block(5, cleveland_data.iloc[row_idx], thickleft_cols={9})
             else:
                 for c in range(5, 10):
-                    worksheet.write(excel_row, c, '', empty_format)
+                    fmt = empty_format_thickleft if c == 9 else empty_format  # thick-left on J
+                    worksheet.write(excel_row, c, '', fmt)
 
-            # Dalton
+            # Dalton (block base_col=10); no thick-left requested
             if row_idx < len(dalton_data):
                 write_block(10, dalton_data.iloc[row_idx])
             else:
                 for c in range(10, 15):
                     worksheet.write(excel_row, c, '', empty_format)
+
+        # Totals row (after last data row)
+        last_data_row = (max_rows - 1) + 2 if max_rows > 0 else 1  # last data row index
+        totals_row = last_data_row + 1
+
+        # Optional labels under Agent Name columns
+        worksheet.write(totals_row, 0, "Totals", total_label_format)
+        worksheet.write(totals_row, 5, "Totals", total_label_format)
+        worksheet.write(totals_row, 10, "Totals", total_label_format)
+
+        # Helper to write a SUM in a column (col_letter, start_row=3 to end_row=last_data_row+1 in Excel terms)
+        def write_sum(col_idx, thick_left=False):
+            # Convert 0-indexed row/col to Excel A1 references
+            col_letter = xlsx_col_letter(col_idx)
+            # Data range starts at row 3 (Excel 1-based)
+            start_row_excel = 3
+            end_row_excel = last_data_row + 1  # convert 0-indexed to 1-indexed
+            formula = f"=SUM({col_letter}{start_row_excel}:{col_letter}{end_row_excel})"
+            fmt = total_number_format_thickleft if thick_left else total_number_format
+            worksheet.write_formula(totals_row, col_idx, formula, fmt)
+
+        # Write sums for requested columns: B, E, G, J, L, O
+        write_sum(1, thick_left=False)  # B
+        write_sum(4, thick_left=True)   # E (thick left)
+        write_sum(6, thick_left=False)  # G
+        write_sum(9, thick_left=True)   # J (thick left)
+        write_sum(11, thick_left=False) # L
+        write_sum(14, thick_left=False) # O
 
         worksheet.freeze_panes(2, 0)
         worksheet.set_landscape()
@@ -268,6 +375,15 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
 
     output.seek(0)
     return output
+
+def xlsx_col_letter(col_idx):
+    """Convert 0-based column index to Excel column letters."""
+    letters = ''
+    x = col_idx + 1
+    while x > 0:
+        x, rem = divmod(x - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
 
 # -----------------------------------------
 # UI
@@ -341,13 +457,13 @@ with col2:
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         st.metric("Chattanooga", f"{len(chattanooga_final)} agents",
-                                  f"{int(chattanooga_final['Needs_Highlight'].sum())} below 30/30")
+                                  f"{int(chattanooga_final['Name_Highlight'].sum())} below 30/30")
                     with c2:
                         st.metric("Cleveland", f"{len(cleveland_final)} agents",
-                                  f"{int(cleveland_final['Needs_Highlight'].sum())} below 30/30")
+                                  f"{int(cleveland_final['Name_Highlight'].sum())} below 30/30")
                     with c3:
                         st.metric("Dalton", f"{len(dalton_final)} agents",
-                                  f"{int(dalton_final['Needs_Highlight'].sum())} below 30/30")
+                                  f"{int(dalton_final['Name_Highlight'].sum())} below 30/30")
 
                     st.session_state.result_buffer = create_formatted_excel(
                         chattanooga_final, cleveland_final, dalton_final
@@ -404,14 +520,15 @@ with st.expander("📖 Instructions & Info"):
     3. **Download** - Get your formatted Excel report
 
     ### 30/30 Validation:
-    - Agents with **less than 30 calls OR less than 30 texts** are highlighted in light red
-    - This helps quickly identify who hasn't met the 30/30 standard
+    - Agent name is highlighted if **Calls < 30 OR Text < 30**
+    - **Calls** cell highlighted red if **Calls < 30**
+    - **Text** cell highlighted red if **Text < 30**
+    - (Talk time cells are not highlighted)
 
     ### Data Processing:
     - **Calls** = Carwars "Unique Outbound" + Tecobi "outbound_calls"
     - **Text** = Carwars "Unique OB Text" + Tecobi "external_sms"
-    - **Talk Times** are kept separate for each system
+    - Filters out any rows whose Agent Name contains "total"
     - Agents are sorted alphabetically by first name
-    - Handles agents appearing in only one system
     - Automatically excludes: AJ Dhir, Thomas Williams, Mark Moore, Nicole Farr
     """)
