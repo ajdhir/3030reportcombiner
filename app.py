@@ -386,6 +386,9 @@ with col2:
         if st.button("🔄 Process and Generate 30/30 Report", type="primary", use_container_width=True):
             try:
                 with st.spinner("Processing files..."):
+                    # Define excluded agents list here
+                    EXCLUDED_AGENTS = ['AJ Dhir', 'Aj Dhir', 'Thomas Williams', 'Mark Moore', 'Nicole Farr']
+                    
                     # Read all files
                     carwars_files = {}
                     tecobi_files = {}
