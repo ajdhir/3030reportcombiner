@@ -70,8 +70,9 @@ def process_carwars_file_v2(df, location, exclude_list=None):
     else:
         df['Agent Name'] = ""
 
-    # Filter out "total" rows (case-insensitive)
+    # Filter out "total" and "unassigned" rows (case-insensitive)
     df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\bunassigned\b', case=False, na=False)]
 
     # Filter out excluded agents (case-insensitive, partial match)
     if exclude_list:
@@ -111,8 +112,9 @@ def process_tecobi_file(df, location, exclude_list=None):
     else:
         df['Agent Name'] = ""
 
-    # Filter out "total" rows (case-insensitive)
+    # Filter out "total" and "unassigned" rows (case-insensitive)
     df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\bunassigned\b', case=False, na=False)]
 
     # Filter out excluded agents
     if exclude_list:
@@ -182,7 +184,7 @@ def combine_location_data(carwars_df, tecobi_df, location):
     return final
 
 def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
-    """Create the final formatted Excel file matching 30/30 format with thick RIGHT borders and totals"""
+    """Create the final formatted Excel file with thick RIGHT borders, totals, and a summary block in Q/R/S"""
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -224,6 +226,11 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         total_number_format_thickright = workbook.add_format({'align': 'center', 'border': 1, 'bold': True, 'right': 2})
         total_label_format = workbook.add_format({'align': 'left', 'border': 1, 'bold': True})
 
+        # Summary block formats
+        summary_header_fmt = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'bg_color': '#E2EAFB'})
+        summary_label_fmt = workbook.add_format({'bold': True, 'border': 1, 'align': 'left'})
+        summary_number_fmt = workbook.add_format({'border': 1, 'align': 'center'})
+
         worksheet = writer.book.add_worksheet('Sheet1')
 
         # Column widths
@@ -245,9 +252,12 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         worksheet.set_column('N:N', 12)
         worksheet.set_column('O:O', 8)
 
-        # Visual separators (optional)
+        # Spacer
         worksheet.set_column('P:P', 2)
-        worksheet.set_column('Q:Q', 2)
+        # Summary area columns (Q,R,S)
+        worksheet.set_column('Q:Q', 14)
+        worksheet.set_column('R:R', 10)
+        worksheet.set_column('S:S', 10)
 
         # Headers
         worksheet.merge_range('A1:E1', 'Chattanooga', location_header_format)
@@ -356,6 +366,29 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         write_sum(9, thick_right=True)    # J (thick RIGHT)
         write_sum(11, thick_right=False)  # L
         write_sum(14, thick_right=True)   # O (thick RIGHT)
+
+        # ---------- Summary block in Q/R/S ----------
+        # Headers: R3 = Calls, S3 = Texts
+        worksheet.write(2, 17, "Calls", summary_header_fmt)  # R3
+        worksheet.write(2, 18, "Texts", summary_header_fmt)  # S3
+        # Labels: Q4/Q5/Q6
+        worksheet.write(3, 16, "Chattanooga", summary_label_fmt)  # Q4
+        worksheet.write(4, 16, "Cleveland", summary_label_fmt)    # Q5
+        worksheet.write(5, 16, "Dalton", summary_label_fmt)       # Q6
+
+        # Totals row Excel index (1-based)
+        totals_row_excel = totals_row + 1
+
+        # Formulas pointing to the totals we just wrote (B/E, G/J, L/O)
+        worksheet.write_formula(3, 17, f"=B{totals_row_excel}", summary_number_fmt)  # R4 calls (Chatt)
+        worksheet.write_formula(3, 18, f"=E{totals_row_excel}", summary_number_fmt)  # S4 texts (Chatt)
+
+        worksheet.write_formula(4, 17, f"=G{totals_row_excel}", summary_number_fmt)  # R5 calls (Cleve)
+        worksheet.write_formula(4, 18, f"=J{totals_row_excel}", summary_number_fmt)  # S5 texts (Cleve)
+
+        worksheet.write_formula(5, 17, f"=L{totals_row_excel}", summary_number_fmt)  # R6 calls (Dalton)
+        worksheet.write_formula(5, 18, f"=O{totals_row_excel}", summary_number_fmt)  # S6 texts (Dalton)
+        # --------------------------------------------
 
         worksheet.freeze_panes(2, 0)
         worksheet.set_landscape()
@@ -516,7 +549,7 @@ with st.expander("📖 Instructions & Info"):
     ### Data Processing:
     - **Calls** = Carwars "Unique Outbound" + Tecobi "outbound_calls"
     - **Text** = Carwars "Unique OB Text" + Tecobi "external_sms"
-    - Filters out any rows whose Agent Name contains "total"
+    - Filters out any rows whose Agent Name contains "total" or "unassigned"
     - Agents are sorted alphabetically by first name
     - Automatically excludes: AJ Dhir, Thomas Williams, Mark Moore, Nicole Farr
     """)
