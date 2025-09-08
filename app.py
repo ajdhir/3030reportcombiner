@@ -11,6 +11,9 @@ st.set_page_config(page_title="30/30 Report Combiner", layout="wide")
 st.title("📊 30/30 Daily Report Combiner")
 st.markdown("### Combine Carwars and Tecobi reports with 30/30 validation")
 
+# Define excluded agents at the top level
+EXCLUDED_AGENTS = ['AJ Dhir', 'Aj Dhir', 'Thomas Williams', 'Mark Moore', 'Nicole Farr']
+
 # Initialize session state
 if 'processed' not in st.session_state:
     st.session_state.processed = False
@@ -53,10 +56,15 @@ def get_first_name(full_name):
         return ""
     return str(full_name).strip().split()[0] if str(full_name).strip() else ""
 
-def process_carwars_file(df, location):
+def process_carwars_file(df, location, exclude_list=None):
     """Process Carwars file and extract needed columns"""
     # Standardize column names
     df.columns = df.columns.str.strip()
+    
+    # Filter out specific excluded agents
+    if exclude_list:
+        for name in exclude_list:
+            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
     
     # Create processed dataframe
     processed = pd.DataFrame()
@@ -74,13 +82,19 @@ def process_carwars_file(df, location):
     
     return processed
 
-def process_tecobi_file(df, location):
+def process_tecobi_file(df, location, exclude_list=None):
     """Process Tecobi file and extract needed columns"""
     # Standardize column names
     df.columns = df.columns.str.strip()
     
     # Create full name from first and last name
     df['Agent Name'] = (df['first_name'].str.strip() + ' ' + df['last_name'].str.strip()).str.strip()
+    
+    # Filter out specific excluded agents
+    if exclude_list:
+        # Remove any variations of the excluded names
+        for name in exclude_list:
+            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
     
     # Calculate talk time if needed
     if 'avg_outbound_call_duration' in df.columns:
@@ -373,6 +387,8 @@ with col1:
 with col2:
     st.subheader("⚙️ Process Files")
     
+    st.info("ℹ️ The following agents will be automatically excluded: AJ Dhir, Thomas Williams, Mark Moore, Nicole Farr")
+    
     # Check if all files are uploaded
     all_files_uploaded = all([
         chatt_carwars, chatt_tecobi,
@@ -386,9 +402,6 @@ with col2:
         if st.button("🔄 Process and Generate 30/30 Report", type="primary", use_container_width=True):
             try:
                 with st.spinner("Processing files..."):
-                    # Define excluded agents list here
-                    EXCLUDED_AGENTS = ['AJ Dhir', 'Aj Dhir', 'Thomas Williams', 'Mark Moore', 'Nicole Farr']
-                    
                     # Read all files
                     carwars_files = {}
                     tecobi_files = {}
@@ -523,4 +536,5 @@ with st.expander("📖 Instructions & Info"):
     - **Talk Times** are kept separate for each system
     - Agents are sorted alphabetically by first name
     - Handles agents appearing in only one system
+    - Automatically excludes: AJ Dhir, Thomas Williams, Mark Moore, Nicole Farr
     """)
