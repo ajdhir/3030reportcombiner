@@ -200,6 +200,11 @@ def process_webex_file(df, exclude_list=None):
 
     processed = pd.DataFrame()
     processed['Agent Name'] = df['Agent Name'].values
+
+    # Debug: show first few rows of Outgoing
+    import streamlit as st
+    st.write("Outgoing column sample:", df['Outgoing'].head(10).tolist() if 'Outgoing' in df.columns else "NOT FOUND")
+
     processed['WebEx_Outgoing'] = pd.to_numeric(df.get('Outgoing', 0), errors='coerce').fillna(0)
 
     # Parse Average Time (format: H:MM:SS or M:SS)
