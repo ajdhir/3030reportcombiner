@@ -431,6 +431,12 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
         for row_idx in range(max_rows):
             excel_row = row_idx + 2  # data starts on Excel row 3 (0-indexed -> 2)
 
+            def safe_num(val, default=0):
+                """Convert value to number, replacing NaN/Inf with default"""
+                if pd.isna(val) or (isinstance(val, float) and (np.isinf(val) or np.isnan(val))):
+                    return default
+                return val
+
             def write_block(base_col, rowdata, thickright_cols=None):
                 """Write one 5-col block; thickright_cols are absolute excel columns needing right=2."""
                 thickright_cols = thickright_cols or set()
@@ -454,10 +460,10 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
                     text_num_fmt = number_format_highlight_thickright if rowdata['Text_Highlight'] else number_format_thickright
 
                 worksheet.write(excel_row, base_col + 0, rowdata['Agent Name'], name_fmt)
-                worksheet.write(excel_row, base_col + 1, int(rowdata['Calls']), calls_fmt)
-                worksheet.write(excel_row, base_col + 2, rowdata['Carwars Avg Talk Time'], carwars_time_fmt)
-                worksheet.write(excel_row, base_col + 3, rowdata['Tecobi Talk Time'], tecobi_time_fmt)
-                worksheet.write(excel_row, base_col + 4, int(rowdata['Text']), text_num_fmt)
+                worksheet.write(excel_row, base_col + 1, int(safe_num(rowdata['Calls'])), calls_fmt)
+                worksheet.write(excel_row, base_col + 2, safe_num(rowdata['Carwars Avg Talk Time']), carwars_time_fmt)
+                worksheet.write(excel_row, base_col + 3, safe_num(rowdata['Tecobi Talk Time']), tecobi_time_fmt)
+                worksheet.write(excel_row, base_col + 4, int(safe_num(rowdata['Text'])), text_num_fmt)
 
             # Chattanooga (block base_col=0); thick RIGHT on column E -> absolute col 4
             if row_idx < len(chattanooga_data):
