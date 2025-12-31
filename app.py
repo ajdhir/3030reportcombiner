@@ -177,8 +177,12 @@ def process_webex_file(df, exclude_list=None):
     df = df.reset_index(drop=True)
     df.columns = df.columns.astype(str).str.strip()
 
+    # Debug: print columns to help troubleshoot
+    import streamlit as st
+    st.write("WebEx columns found:", list(df.columns))
+
     if 'Name' not in df.columns:
-        raise ValueError("WebEx file must have a 'Name' column")
+        raise ValueError(f"WebEx file must have a 'Name' column. Found columns: {list(df.columns)}")
 
     # Parse agent names (remove extension number)
     df['Agent Name'] = df['Name'].apply(parse_webex_name)
@@ -199,7 +203,17 @@ def process_webex_file(df, exclude_list=None):
 
     processed = pd.DataFrame()
     processed['Agent Name'] = df['Agent Name'].values
-    processed['WebEx_Outgoing'] = pd.to_numeric(df.get('Outgoing', 0), errors='coerce').fillna(0)
+
+    # Get Outgoing column - check for exact match first, then try to find it
+    if 'Outgoing' in df.columns:
+        processed['WebEx_Outgoing'] = pd.to_numeric(df['Outgoing'], errors='coerce').fillna(0)
+    else:
+        # Try to find column containing 'Outgoing'
+        outgoing_col = [c for c in df.columns if 'Outgoing' in str(c)]
+        if outgoing_col:
+            processed['WebEx_Outgoing'] = pd.to_numeric(df[outgoing_col[0]], errors='coerce').fillna(0)
+        else:
+            processed['WebEx_Outgoing'] = 0
 
     # Parse Average Time (format: H:MM:SS or M:SS)
     if 'Average Time' in df.columns:
