@@ -587,14 +587,38 @@ with col2:
         if st.button("🔄 Process and Generate 30/30 Report", type="primary", use_container_width=True):
             try:
                 with st.spinner("Processing files..."):
-                    def read_file(uploaded_file, skip_rows=None):
+                    def read_file(uploaded_file):
                         name = uploaded_file.name.lower()
                         if name.endswith('.csv'):
-                            if skip_rows is not None:
-                                return pd.read_csv(uploaded_file, skiprows=skip_rows)
                             return pd.read_csv(uploaded_file)
-                        if skip_rows is not None:
-                            return pd.read_excel(uploaded_file, skiprows=skip_rows)
+                        return pd.read_excel(uploaded_file)
+
+                    def read_file_find_header(uploaded_file, header_marker='Name'):
+                        """Read file and find the row containing the header marker"""
+                        import io
+                        name = uploaded_file.name.lower()
+                        content = uploaded_file.read()
+                        uploaded_file.seek(0)  # Reset for potential re-read
+
+                        # Find the header row by scanning lines
+                        if name.endswith('.csv'):
+                            lines = content.decode('utf-8', errors='ignore').split('\n')
+                            for i, line in enumerate(lines):
+                                if header_marker in line:
+                                    uploaded_file.seek(0)
+                                    return pd.read_csv(uploaded_file, skiprows=i)
+                        else:
+                            # For Excel, read without header first
+                            df = pd.read_excel(io.BytesIO(content), header=None)
+                            for i in range(len(df)):
+                                if header_marker in str(df.iloc[i].values):
+                                    uploaded_file.seek(0)
+                                    return pd.read_excel(uploaded_file, skiprows=i)
+
+                        # Fallback: just read normally
+                        uploaded_file.seek(0)
+                        if name.endswith('.csv'):
+                            return pd.read_csv(uploaded_file)
                         return pd.read_excel(uploaded_file)
 
                     # Carwars (Chattanooga and Dalton only - Cleveland uses different systems)
@@ -617,9 +641,9 @@ with col2:
                     dalton_final      = combine_location_data(all_carwars, all_tecobi, 'Dalton')
 
                     # Process Cleveland with WebEx and User Activity Performance
-                    # Skip first 2 rows (metadata line and empty line) to get to actual headers
-                    cleveland_webex_df = process_webex_file(read_file(cleve_webex, skip_rows=2), exclude_list=EXCLUDED_AGENTS)
-                    cleveland_user_activity_df = process_user_activity_file(read_file(cleve_user_activity, skip_rows=2), exclude_list=EXCLUDED_AGENTS)
+                    # Auto-detect header row by finding 'Name' column
+                    cleveland_webex_df = process_webex_file(read_file_find_header(cleve_webex, 'Name'), exclude_list=EXCLUDED_AGENTS)
+                    cleveland_user_activity_df = process_user_activity_file(read_file_find_header(cleve_user_activity, 'Name'), exclude_list=EXCLUDED_AGENTS)
                     cleveland_final = combine_cleveland_data(cleveland_webex_df, cleveland_user_activity_df)
 
                     # Summary
