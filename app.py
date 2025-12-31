@@ -79,9 +79,11 @@ def process_carwars_file_v2(df, location, exclude_list=None):
         for name in exclude_list:
             df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
 
+    # Reset index after filtering to ensure alignment
+    df = df.reset_index(drop=True)
+
     processed = pd.DataFrame()
     processed['Agent Name'] = df['Agent Name']
-
     processed['Carwars_Unique_Outbound'] = pd.to_numeric(df.get('Unique Outbound', 0), errors='coerce').fillna(0)
 
     if 'Avg Talk Time' in df.columns:
@@ -120,6 +122,9 @@ def process_tecobi_file(df, location, exclude_list=None):
     if exclude_list:
         for name in exclude_list:
             df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
+
+    # Reset index after filtering to ensure alignment
+    df = df.reset_index(drop=True)
 
     # Tecobi talk time
     if 'avg_outbound_call_duration' in df.columns:
@@ -245,9 +250,12 @@ def process_user_activity_file(df, exclude_list=None):
     # Filter out empty names
     df = df[df['Agent Name'].str.strip() != '']
 
+    # Reset index after filtering to ensure alignment
+    df = df.reset_index(drop=True)
+
     processed = pd.DataFrame()
-    processed['Agent Name'] = df['Agent Name'].values
-    processed['Texts'] = pd.to_numeric(df.get('Texts', 0), errors='coerce').fillna(0)
+    processed['Agent Name'] = df['Agent Name']
+    processed['Texts'] = pd.to_numeric(df['Texts'], errors='coerce').fillna(0)
 
     # Create normalized name for matching
     processed['Name_Normalized'] = processed['Agent Name'].apply(normalize_name_for_matching)
