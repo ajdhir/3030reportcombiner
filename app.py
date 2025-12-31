@@ -593,8 +593,8 @@ with col2:
                             return pd.read_csv(uploaded_file)
                         return pd.read_excel(uploaded_file)
 
-                    def read_file_find_header(uploaded_file, header_marker='Name'):
-                        """Read file and find the row containing the header marker"""
+                    def read_file_find_header(uploaded_file):
+                        """Read file and find the row containing 'Name' as a column header"""
                         import io
                         name = uploaded_file.name.lower()
                         content = uploaded_file.read()
@@ -604,14 +604,16 @@ with col2:
                         if name.endswith('.csv'):
                             lines = content.decode('utf-8', errors='ignore').split('\n')
                             for i, line in enumerate(lines):
-                                if header_marker in line:
+                                # Check if line starts with "Name" or contains ,"Name" (as a column)
+                                if line.startswith('"Name"') or line.startswith('Name,') or line.startswith('Name,'):
                                     uploaded_file.seek(0)
                                     return pd.read_csv(uploaded_file, skiprows=i)
                         else:
                             # For Excel, read without header first
                             df = pd.read_excel(io.BytesIO(content), header=None)
                             for i in range(len(df)):
-                                if header_marker in str(df.iloc[i].values):
+                                first_val = str(df.iloc[i, 0]).strip()
+                                if first_val == 'Name':
                                     uploaded_file.seek(0)
                                     return pd.read_excel(uploaded_file, skiprows=i)
 
@@ -642,8 +644,8 @@ with col2:
 
                     # Process Cleveland with WebEx and User Activity Performance
                     # Auto-detect header row by finding 'Name' column
-                    cleveland_webex_df = process_webex_file(read_file_find_header(cleve_webex, 'Name'), exclude_list=EXCLUDED_AGENTS)
-                    cleveland_user_activity_df = process_user_activity_file(read_file_find_header(cleve_user_activity, 'Name'), exclude_list=EXCLUDED_AGENTS)
+                    cleveland_webex_df = process_webex_file(read_file_find_header(cleve_webex), exclude_list=EXCLUDED_AGENTS)
+                    cleveland_user_activity_df = process_user_activity_file(read_file_find_header(cleve_user_activity), exclude_list=EXCLUDED_AGENTS)
                     cleveland_final = combine_cleveland_data(cleveland_webex_df, cleveland_user_activity_df)
 
                     # Summary
