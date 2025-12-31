@@ -175,20 +175,9 @@ def process_webex_file(df, exclude_list=None):
     - Average Time (talk time)
     """
     df = df.reset_index(drop=True)
+    df.columns = df.columns.astype(str).str.strip()
 
-    # Find the header row containing 'Name'
-    header_found = False
-    for idx in range(len(df)):
-        row_values = [str(v).strip() for v in df.iloc[idx].values]
-        if 'Name' in row_values:
-            # Found header row, reset dataframe with new headers
-            new_headers = [str(v).strip() for v in df.iloc[idx].values]
-            df = df.iloc[idx + 1:].reset_index(drop=True)
-            df.columns = new_headers
-            header_found = True
-            break
-
-    if not header_found or 'Name' not in df.columns:
+    if 'Name' not in df.columns:
         raise ValueError("WebEx file must have a 'Name' column")
 
     # Parse agent names (remove extension number)
@@ -231,19 +220,9 @@ def process_user_activity_file(df, exclude_list=None):
     - Texts count
     """
     df = df.reset_index(drop=True)
+    df.columns = df.columns.astype(str).str.strip()
 
-    # Find the header row containing 'Name'
-    header_found = False
-    for idx in range(len(df)):
-        row_values = [str(v).strip() for v in df.iloc[idx].values]
-        if 'Name' in row_values:
-            new_headers = [str(v).strip() for v in df.iloc[idx].values]
-            df = df.iloc[idx + 1:].reset_index(drop=True)
-            df.columns = new_headers
-            header_found = True
-            break
-
-    if not header_found or 'Name' not in df.columns:
+    if 'Name' not in df.columns:
         raise ValueError("User Activity file must have a 'Name' column")
 
     # Convert names from 'LastName, FirstName' to 'FirstName LastName'
@@ -608,11 +587,15 @@ with col2:
         if st.button("🔄 Process and Generate 30/30 Report", type="primary", use_container_width=True):
             try:
                 with st.spinner("Processing files..."):
-                    def read_file(uploaded_file, header_row=0):
+                    def read_file(uploaded_file, skip_rows=None):
                         name = uploaded_file.name.lower()
                         if name.endswith('.csv'):
-                            return pd.read_csv(uploaded_file, header=header_row)
-                        return pd.read_excel(uploaded_file, header=header_row)
+                            if skip_rows is not None:
+                                return pd.read_csv(uploaded_file, skiprows=skip_rows)
+                            return pd.read_csv(uploaded_file)
+                        if skip_rows is not None:
+                            return pd.read_excel(uploaded_file, skiprows=skip_rows)
+                        return pd.read_excel(uploaded_file)
 
                     # Carwars (Chattanooga and Dalton only - Cleveland uses different systems)
                     carwars_files = {
@@ -634,9 +617,9 @@ with col2:
                     dalton_final      = combine_location_data(all_carwars, all_tecobi, 'Dalton')
 
                     # Process Cleveland with WebEx and User Activity Performance
-                    # Use header=None to let the processing functions find the actual header row
-                    cleveland_webex_df = process_webex_file(read_file(cleve_webex, header_row=None), exclude_list=EXCLUDED_AGENTS)
-                    cleveland_user_activity_df = process_user_activity_file(read_file(cleve_user_activity, header_row=None), exclude_list=EXCLUDED_AGENTS)
+                    # Skip first 2 rows (metadata line and empty line) to get to actual headers
+                    cleveland_webex_df = process_webex_file(read_file(cleve_webex, skip_rows=2), exclude_list=EXCLUDED_AGENTS)
+                    cleveland_user_activity_df = process_user_activity_file(read_file(cleve_user_activity, skip_rows=2), exclude_list=EXCLUDED_AGENTS)
                     cleveland_final = combine_cleveland_data(cleveland_webex_df, cleveland_user_activity_df)
 
                     # Summary
