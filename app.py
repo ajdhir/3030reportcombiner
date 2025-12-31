@@ -460,8 +460,13 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
                 # Calls format (highlight only if Calls < 30)
                 calls_fmt = number_format_highlight if rowdata['Calls_Highlight'] else number_format
 
-                # Time formats
-                carwars_time_fmt = time_format
+                # Time formats - highlight if under 10 seconds
+                # 10 seconds as Excel time fraction = 10 / (24 * 60 * 60) = 0.00011574
+                ten_seconds_excel = 10 / (24 * 60 * 60)
+                talk_time_val = safe_num(rowdata['Carwars Avg Talk Time'])
+                talk_time_highlight = talk_time_val > 0 and talk_time_val < ten_seconds_excel
+                carwars_time_fmt = time_format_highlight if talk_time_highlight else time_format
+
                 tecobi_time_fmt = number_format  # seconds as plain number
 
                 # Text format (highlight only if Text < 30)
@@ -474,7 +479,7 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
 
                 worksheet.write(excel_row, base_col + 0, rowdata['Agent Name'], name_fmt)
                 worksheet.write(excel_row, base_col + 1, int(safe_num(rowdata['Calls'])), calls_fmt)
-                worksheet.write(excel_row, base_col + 2, safe_num(rowdata['Carwars Avg Talk Time']), carwars_time_fmt)
+                worksheet.write(excel_row, base_col + 2, talk_time_val, carwars_time_fmt)
                 worksheet.write(excel_row, base_col + 3, safe_num(rowdata['Tecobi Talk Time']), tecobi_time_fmt)
                 worksheet.write(excel_row, base_col + 4, int(safe_num(rowdata['Text'])), text_num_fmt)
 
