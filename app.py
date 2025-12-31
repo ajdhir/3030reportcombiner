@@ -19,7 +19,7 @@ from datetime import datetime
 st.set_page_config(page_title="30/30 Report Combiner", layout="wide")
 
 st.title("📊 30/30 Daily Report Combiner")
-st.markdown("### Combine Carwars and Tecobi reports with 30/30 validation")
+st.markdown("### Combine daily reports with 30/30 validation")
 
 # Define excluded agents at the top level
 EXCLUDED_AGENTS = ['AJ Dhir', 'Aj Dhir', 'Thomas Williams', 'Mark Moore', 'Nicole Farr']
@@ -136,6 +136,170 @@ def process_tecobi_file(df, location, exclude_list=None):
     processed['Tecobi_External_SMS'] = pd.to_numeric(df.get('external_sms', 0), errors='coerce').fillna(0)
     processed['Location'] = location
     return processed
+
+def parse_webex_name(name_with_extension):
+    """Parse WebEx name format: 'FirstName LastName ( extension )' -> 'FirstName LastName'"""
+    if pd.isna(name_with_extension):
+        return ""
+    name_str = str(name_with_extension).strip()
+    # Remove the extension part: ' ( 5616 )' or '( 5616 )'
+    if '(' in name_str:
+        name_str = name_str.split('(')[0].strip()
+    return name_str
+
+def normalize_name_for_matching(name):
+    """Normalize a name to 'firstname lastname' lowercase for matching"""
+    if pd.isna(name):
+        return ""
+    return str(name).strip().lower()
+
+def convert_lastname_firstname_to_firstname_lastname(name):
+    """Convert 'LastName, FirstName' to 'FirstName LastName'"""
+    if pd.isna(name):
+        return ""
+    name_str = str(name).strip()
+    if ',' in name_str:
+        parts = name_str.split(',', 1)
+        if len(parts) == 2:
+            last_name = parts[0].strip()
+            first_name = parts[1].strip()
+            return f"{first_name} {last_name}"
+    return name_str
+
+def process_webex_file(df, exclude_list=None):
+    """Process WebEx Employee Summary Report for Cleveland
+
+    Extracts:
+    - Agent Name (from 'Name' column, removing extension)
+    - Outgoing calls
+    - Average Time (talk time)
+    """
+    df.columns = df.columns.str.strip()
+
+    # Skip header rows if present (WebEx has metadata rows at top)
+    # Look for the row containing 'Name' as a header
+    if 'Name' not in df.columns:
+        # Try to find the header row
+        for idx, row in df.iterrows():
+            if 'Name' in row.values:
+                # Found header row, reset dataframe
+                header_idx = idx
+                df.columns = df.iloc[header_idx].values
+                df = df.iloc[header_idx + 1:].reset_index(drop=True)
+                df.columns = df.columns.astype(str).str.strip()
+                break
+
+    if 'Name' not in df.columns:
+        raise ValueError("WebEx file must have a 'Name' column")
+
+    # Parse agent names (remove extension number)
+    df['Agent Name'] = df['Name'].apply(parse_webex_name)
+
+    # Filter out "total" rows and non-agent entries (Sales 5601, CLNIS Operator, etc.)
+    df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\bsales\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\boperator\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\bunassigned\b', case=False, na=False)]
+
+    # Filter out excluded agents
+    if exclude_list:
+        for name in exclude_list:
+            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
+
+    # Filter out empty names
+    df = df[df['Agent Name'].str.strip() != '']
+
+    processed = pd.DataFrame()
+    processed['Agent Name'] = df['Agent Name'].values
+    processed['WebEx_Outgoing'] = pd.to_numeric(df.get('Outgoing', 0), errors='coerce').fillna(0)
+
+    # Parse Average Time (format: H:MM:SS or M:SS)
+    if 'Average Time' in df.columns:
+        processed['WebEx_Avg_Time'] = df['Average Time'].apply(parse_time_to_excel)
+    else:
+        processed['WebEx_Avg_Time'] = 0
+
+    # Create normalized name for matching
+    processed['Name_Normalized'] = processed['Agent Name'].apply(normalize_name_for_matching)
+
+    return processed
+
+def process_user_activity_file(df, exclude_list=None):
+    """Process User Activity Performance Report for Cleveland texts
+
+    Extracts:
+    - Agent Name (converted from 'LastName, FirstName' to 'FirstName LastName')
+    - Texts count
+    """
+    df.columns = df.columns.str.strip()
+
+    # Skip header rows if present (User Activity has metadata rows at top)
+    # Look for the row containing 'Name' as a header
+    if 'Name' not in df.columns:
+        for idx, row in df.iterrows():
+            if 'Name' in row.values:
+                header_idx = idx
+                df.columns = df.iloc[header_idx].values
+                df = df.iloc[header_idx + 1:].reset_index(drop=True)
+                df.columns = df.columns.astype(str).str.strip()
+                break
+
+    if 'Name' not in df.columns:
+        raise ValueError("User Activity file must have a 'Name' column")
+
+    # Convert names from 'LastName, FirstName' to 'FirstName LastName'
+    df['Agent Name'] = df['Name'].apply(convert_lastname_firstname_to_firstname_lastname)
+
+    # Filter out "total" rows
+    df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\bunassigned\b', case=False, na=False)]
+
+    # Filter out excluded agents
+    if exclude_list:
+        for name in exclude_list:
+            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
+
+    # Filter out empty names
+    df = df[df['Agent Name'].str.strip() != '']
+
+    processed = pd.DataFrame()
+    processed['Agent Name'] = df['Agent Name'].values
+    processed['Texts'] = pd.to_numeric(df.get('Texts', 0), errors='coerce').fillna(0)
+
+    # Create normalized name for matching
+    processed['Name_Normalized'] = processed['Agent Name'].apply(normalize_name_for_matching)
+
+    return processed
+
+def combine_cleveland_data(webex_df, user_activity_df):
+    """Combine WebEx and User Activity data for Cleveland
+
+    WebEx is the primary source (determines which agents appear).
+    User Activity provides text counts, matched by name.
+    """
+    # Create a lookup dict for texts from User Activity (normalized name -> texts)
+    texts_lookup = dict(zip(user_activity_df['Name_Normalized'], user_activity_df['Texts']))
+
+    # Build final dataframe based on WebEx agents
+    final = pd.DataFrame()
+    final['Agent Name'] = webex_df['Agent Name']
+    final['Calls'] = webex_df['WebEx_Outgoing'].astype(int)
+    final['Carwars Avg Talk Time'] = webex_df['WebEx_Avg_Time']  # Using same column name for compatibility
+    final['Tecobi Talk Time'] = 0  # No Tecobi for Cleveland - placeholder for column consistency
+
+    # Look up texts by normalized name
+    final['Text'] = webex_df['Name_Normalized'].map(texts_lookup).fillna(0).astype(int)
+
+    # Sort by first name
+    final['First_Name'] = final['Agent Name'].apply(get_first_name)
+    final = final.sort_values('First_Name', na_position='last').drop(columns=['First_Name'])
+
+    # Boolean flags for highlighting logic
+    final['Name_Highlight'] = (final['Calls'] < 30) | (final['Text'] < 30)
+    final['Calls_Highlight'] = (final['Calls'] < 30)
+    final['Text_Highlight'] = (final['Text'] < 30)
+
+    return final
 
 def combine_location_data(carwars_df, tecobi_df, location):
     """Combine Carwars and Tecobi data for a single location"""
@@ -414,7 +578,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("📁 Upload Files")
-    st.markdown("Upload all 6 files (2 per location)")
+    st.markdown("Upload all 6 files (2 per location)  \n*Cleveland uses WebEx + User Activity Performance*")
 
     # File uploaders
     st.markdown("**Chattanooga Files:**")
@@ -422,8 +586,8 @@ with col1:
     chatt_tecobi = st.file_uploader("Chattanooga Tecobi", type=['xlsx', 'xls', 'csv'], key="chatt_tecobi")
 
     st.markdown("**Cleveland Files:**")
-    cleve_carwars = st.file_uploader("Cleveland Carwars", type=['xlsx', 'xls', 'csv'], key="cleve_carwars")
-    cleve_tecobi = st.file_uploader("Cleveland Tecobi", type=['xlsx', 'xls', 'csv'], key="cleve_tecobi")
+    cleve_webex = st.file_uploader("Cleveland WebEx", type=['xlsx', 'xls', 'csv'], key="cleve_webex")
+    cleve_user_activity = st.file_uploader("Cleveland User Activity Performance", type=['xlsx', 'xls', 'csv'], key="cleve_user_activity")
 
     st.markdown("**Dalton Files:**")
     dalton_carwars = st.file_uploader("Dalton Carwars", type=['xlsx', 'xls', 'csv'], key="dalton_carwars")
@@ -435,7 +599,7 @@ with col2:
 
     all_files_uploaded = all([
         chatt_carwars, chatt_tecobi,
-        cleve_carwars, cleve_tecobi,
+        cleve_webex, cleve_user_activity,
         dalton_carwars, dalton_tecobi
     ])
 
@@ -452,26 +616,29 @@ with col2:
                         # openpyxl engine will be used automatically if installed
                         return pd.read_excel(uploaded_file)
 
-                    # Carwars
+                    # Carwars (Chattanooga and Dalton only - Cleveland uses different systems)
                     carwars_files = {
                         'Chattanooga': process_carwars_file_v2(read_file(chatt_carwars), 'Chattanooga', exclude_list=EXCLUDED_AGENTS),
-                        'Cleveland':   process_carwars_file_v2(read_file(cleve_carwars), 'Cleveland',   exclude_list=EXCLUDED_AGENTS),
                         'Dalton':      process_carwars_file_v2(read_file(dalton_carwars), 'Dalton',    exclude_list=EXCLUDED_AGENTS),
                     }
 
-                    # Tecobi
+                    # Tecobi (Chattanooga and Dalton only - Cleveland uses different systems)
                     tecobi_files = {
                         'Chattanooga': process_tecobi_file(read_file(chatt_tecobi), 'Chattanooga', exclude_list=EXCLUDED_AGENTS),
-                        'Cleveland':   process_tecobi_file(read_file(cleve_tecobi), 'Cleveland',   exclude_list=EXCLUDED_AGENTS),
                         'Dalton':      process_tecobi_file(read_file(dalton_tecobi), 'Dalton',     exclude_list=EXCLUDED_AGENTS),
                     }
 
                     all_carwars = pd.concat(carwars_files.values(), ignore_index=True)
                     all_tecobi = pd.concat(tecobi_files.values(), ignore_index=True)
 
+                    # Process Chattanooga and Dalton with Carwars/Tecobi
                     chattanooga_final = combine_location_data(all_carwars, all_tecobi, 'Chattanooga')
-                    cleveland_final   = combine_location_data(all_carwars, all_tecobi, 'Cleveland')
                     dalton_final      = combine_location_data(all_carwars, all_tecobi, 'Dalton')
+
+                    # Process Cleveland with WebEx and User Activity Performance
+                    cleveland_webex_df = process_webex_file(read_file(cleve_webex), exclude_list=EXCLUDED_AGENTS)
+                    cleveland_user_activity_df = process_user_activity_file(read_file(cleve_user_activity), exclude_list=EXCLUDED_AGENTS)
+                    cleveland_final = combine_cleveland_data(cleveland_webex_df, cleveland_user_activity_df)
 
                     # Summary
                     st.markdown("### 📊 Summary")
@@ -502,8 +669,8 @@ with col2:
         missing = []
         if not chatt_carwars:  missing.append("Chattanooga Carwars")
         if not chatt_tecobi:   missing.append("Chattanooga Tecobi")
-        if not cleve_carwars:  missing.append("Cleveland Carwars")
-        if not cleve_tecobi:   missing.append("Cleveland Tecobi")
+        if not cleve_webex:    missing.append("Cleveland WebEx")
+        if not cleve_user_activity: missing.append("Cleveland User Activity Performance")
         if not dalton_carwars: missing.append("Dalton Carwars")
         if not dalton_tecobi:  missing.append("Dalton Tecobi")
         if missing:
@@ -536,9 +703,13 @@ st.markdown("---")
 with st.expander("📖 Instructions & Info"):
     st.markdown("""
     ### How to Use:
-    1. **Upload all 6 files** - Carwars and Tecobi files for each location
+    1. **Upload all 6 files** - Files for each location as specified
     2. **Click Process** - The app will combine and validate the data
     3. **Download** - Get your formatted Excel report
+
+    ### File Requirements:
+    - **Chattanooga & Dalton**: Carwars and Tecobi files
+    - **Cleveland**: WebEx (Employee Summary Report) and User Activity Performance files
 
     ### 30/30 Validation:
     - Agent name is highlighted if **Calls < 30 OR Text < 30**
@@ -547,9 +718,17 @@ with st.expander("📖 Instructions & Info"):
     - (Talk time cells are not highlighted)
 
     ### Data Processing:
+    **Chattanooga & Dalton:**
     - **Calls** = Carwars "Unique Outbound" + Tecobi "outbound_calls"
     - **Text** = Carwars "Unique OB Text" + Tecobi "external_sms"
-    - Filters out any rows whose Agent Name contains "total" or "unassigned"
+
+    **Cleveland:**
+    - **Calls** = WebEx "Outgoing"
+    - **Talk Time** = WebEx "Average Time"
+    - **Text** = User Activity Performance "Texts"
+
+    ### General:
+    - Filters out rows containing "total", "unassigned", "sales", "operator"
     - Agents are sorted alphabetically by first name
     - Automatically excludes: AJ Dhir, Thomas Williams, Mark Moore, Nicole Farr
     """)
