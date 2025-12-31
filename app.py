@@ -174,19 +174,26 @@ def process_webex_file(df, exclude_list=None):
     - Outgoing calls
     - Average Time (talk time)
     """
+    df = df.reset_index(drop=True)
     df.columns = df.columns.astype(str).str.strip()
 
     # Skip header rows if present (WebEx has metadata rows at top)
     # Look for the row containing 'Name' as a header
     if 'Name' not in df.columns:
         # Try to find the header row by checking each row for 'Name'
-        for idx, row in df.iterrows():
-            row_values = [str(v).strip() for v in row.values]
+        header_found = False
+        for idx in range(len(df)):
+            row_values = [str(v).strip() for v in df.iloc[idx].values]
             if 'Name' in row_values:
-                # Found header row, reset dataframe
-                df.columns = [str(v).strip() for v in df.iloc[idx].values]
+                # Found header row, reset dataframe with new headers
+                new_headers = [str(v).strip() for v in df.iloc[idx].values]
                 df = df.iloc[idx + 1:].reset_index(drop=True)
+                df.columns = new_headers
+                header_found = True
                 break
+
+        if not header_found:
+            raise ValueError("WebEx file must have a 'Name' column")
 
     if 'Name' not in df.columns:
         raise ValueError("WebEx file must have a 'Name' column")
@@ -230,17 +237,24 @@ def process_user_activity_file(df, exclude_list=None):
     - Agent Name (converted from 'LastName, FirstName' to 'FirstName LastName')
     - Texts count
     """
+    df = df.reset_index(drop=True)
     df.columns = df.columns.astype(str).str.strip()
 
     # Skip header rows if present (User Activity has metadata rows at top)
     # Look for the row containing 'Name' as a header
     if 'Name' not in df.columns:
-        for idx, row in df.iterrows():
-            row_values = [str(v).strip() for v in row.values]
+        header_found = False
+        for idx in range(len(df)):
+            row_values = [str(v).strip() for v in df.iloc[idx].values]
             if 'Name' in row_values:
-                df.columns = [str(v).strip() for v in df.iloc[idx].values]
+                new_headers = [str(v).strip() for v in df.iloc[idx].values]
                 df = df.iloc[idx + 1:].reset_index(drop=True)
+                df.columns = new_headers
+                header_found = True
                 break
+
+        if not header_found:
+            raise ValueError("User Activity file must have a 'Name' column")
 
     if 'Name' not in df.columns:
         raise ValueError("User Activity file must have a 'Name' column")
