@@ -174,19 +174,18 @@ def process_webex_file(df, exclude_list=None):
     - Outgoing calls
     - Average Time (talk time)
     """
-    df.columns = df.columns.str.strip()
+    df.columns = df.columns.astype(str).str.strip()
 
     # Skip header rows if present (WebEx has metadata rows at top)
     # Look for the row containing 'Name' as a header
     if 'Name' not in df.columns:
-        # Try to find the header row
+        # Try to find the header row by checking each row for 'Name'
         for idx, row in df.iterrows():
-            if 'Name' in row.values:
+            row_values = [str(v).strip() for v in row.values]
+            if 'Name' in row_values:
                 # Found header row, reset dataframe
-                header_idx = idx
-                df.columns = df.iloc[header_idx].values
-                df = df.iloc[header_idx + 1:].reset_index(drop=True)
-                df.columns = df.columns.astype(str).str.strip()
+                df.columns = [str(v).strip() for v in df.iloc[idx].values]
+                df = df.iloc[idx + 1:].reset_index(drop=True)
                 break
 
     if 'Name' not in df.columns:
@@ -231,17 +230,16 @@ def process_user_activity_file(df, exclude_list=None):
     - Agent Name (converted from 'LastName, FirstName' to 'FirstName LastName')
     - Texts count
     """
-    df.columns = df.columns.str.strip()
+    df.columns = df.columns.astype(str).str.strip()
 
     # Skip header rows if present (User Activity has metadata rows at top)
     # Look for the row containing 'Name' as a header
     if 'Name' not in df.columns:
         for idx, row in df.iterrows():
-            if 'Name' in row.values:
-                header_idx = idx
-                df.columns = df.iloc[header_idx].values
-                df = df.iloc[header_idx + 1:].reset_index(drop=True)
-                df.columns = df.columns.astype(str).str.strip()
+            row_values = [str(v).strip() for v in row.values]
+            if 'Name' in row_values:
+                df.columns = [str(v).strip() for v in df.iloc[idx].values]
+                df = df.iloc[idx + 1:].reset_index(drop=True)
                 break
 
     if 'Name' not in df.columns:
