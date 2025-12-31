@@ -198,14 +198,12 @@ def process_webex_file(df, exclude_list=None):
     # Filter out empty names
     df = df[df['Agent Name'].str.strip() != '']
 
+    # Reset index after filtering to ensure alignment
+    df = df.reset_index(drop=True)
+
     processed = pd.DataFrame()
-    processed['Agent Name'] = df['Agent Name'].values
-
-    # Debug: show first few rows of Outgoing
-    import streamlit as st
-    st.write("Outgoing column sample:", df['Outgoing'].head(10).tolist() if 'Outgoing' in df.columns else "NOT FOUND")
-
-    processed['WebEx_Outgoing'] = pd.to_numeric(df.get('Outgoing', 0), errors='coerce').fillna(0)
+    processed['Agent Name'] = df['Agent Name']
+    processed['WebEx_Outgoing'] = pd.to_numeric(df['Outgoing'], errors='coerce').fillna(0)
 
     # Parse Average Time (format: H:MM:SS or M:SS)
     if 'Average Time' in df.columns:
@@ -611,30 +609,18 @@ with col2:
                         import io
                         name = uploaded_file.name.lower()
                         content = uploaded_file.read()
-                        uploaded_file.seek(0)  # Reset for potential re-read
 
                         # Find the header row by scanning lines
                         if name.endswith('.csv'):
                             lines = content.decode('utf-8', errors='ignore').split('\n')
                             for i, line in enumerate(lines):
-                                # Check if line starts with "Name" or contains ,"Name" (as a column)
-                                if line.startswith('"Name"') or line.startswith('Name,') or line.startswith('Name,'):
-                                    uploaded_file.seek(0)
-                                    return pd.read_csv(uploaded_file, skiprows=i)
-                        else:
-                            # For Excel, read without header first
-                            df = pd.read_excel(io.BytesIO(content), header=None)
-                            for i in range(len(df)):
-                                first_val = str(df.iloc[i, 0]).strip()
-                                if first_val == 'Name':
-                                    uploaded_file.seek(0)
-                                    return pd.read_excel(uploaded_file, skiprows=i)
+                                # Check if line starts with "Name" (quoted or unquoted)
+                                if line.startswith('"Name"') or line.startswith('Name,'):
+                                    # Use BytesIO to read from content, not the original file
+                                    return pd.read_csv(io.BytesIO(content), skiprows=i)
 
                         # Fallback: just read normally
-                        uploaded_file.seek(0)
-                        if name.endswith('.csv'):
-                            return pd.read_csv(uploaded_file)
-                        return pd.read_excel(uploaded_file)
+                        return pd.read_csv(io.BytesIO(content)) if name.endswith('.csv') else pd.read_excel(io.BytesIO(content))
 
                     # Carwars (Chattanooga and Dalton only - Cleveland uses different systems)
                     carwars_files = {
