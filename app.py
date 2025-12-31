@@ -261,12 +261,12 @@ def combine_cleveland_data(webex_df, user_activity_df):
     # Build final dataframe based on WebEx agents
     final = pd.DataFrame()
     final['Agent Name'] = webex_df['Agent Name']
-    final['Calls'] = webex_df['WebEx_Outgoing'].astype(int)
+    final['Calls'] = pd.to_numeric(webex_df['WebEx_Outgoing'], errors='coerce').fillna(0).astype(int)
     final['Carwars Avg Talk Time'] = webex_df['WebEx_Avg_Time']  # Using same column name for compatibility
     final['Tecobi Talk Time'] = 0  # No Tecobi for Cleveland - placeholder for column consistency
 
     # Look up texts by normalized name
-    final['Text'] = webex_df['Name_Normalized'].map(texts_lookup).fillna(0).astype(int)
+    final['Text'] = pd.to_numeric(webex_df['Name_Normalized'].map(texts_lookup), errors='coerce').fillna(0).astype(int)
 
     # Sort by first name
     final['First_Name'] = final['Agent Name'].apply(get_first_name)
@@ -309,10 +309,10 @@ def combine_location_data(carwars_df, tecobi_df, location):
     # Final table
     final = pd.DataFrame({
         'Agent Name': combined['Agent Name'],
-        'Calls': combined['Calls'].astype(int),
+        'Calls': pd.to_numeric(combined['Calls'], errors='coerce').fillna(0).astype(int),
         'Carwars Avg Talk Time': combined.get('Carwars_Avg_Talk_Time', 0),
         'Tecobi Talk Time': combined.get('Tecobi_Talk_Time', 0),
-        'Text': combined['Text'].astype(int)
+        'Text': pd.to_numeric(combined['Text'], errors='coerce').fillna(0).astype(int)
     })
 
     # Sort by first name
