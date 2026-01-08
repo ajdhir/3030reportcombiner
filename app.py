@@ -24,6 +24,52 @@ st.markdown("### Combine daily reports with 30/30 validation")
 # Define excluded agents at the top level
 EXCLUDED_AGENTS = ['AJ Dhir', 'Aj Dhir', 'Thomas Williams', 'Mark Moore', 'Nicole Farr']
 
+# Nickname mappings (canonical form -> list of nicknames)
+# All matching is done by converting nicknames to the canonical form
+NICKNAME_MAP = {
+    'michael': ['mike', 'mick', 'mikey'],
+    'william': ['will', 'bill', 'billy', 'willy'],
+    'robert': ['rob', 'bob', 'bobby', 'robbie'],
+    'richard': ['rick', 'dick', 'rich', 'ricky'],
+    'james': ['jim', 'jimmy', 'jamie'],
+    'joseph': ['joe', 'joey'],
+    'thomas': ['tom', 'tommy'],
+    'christopher': ['chris'],
+    'daniel': ['dan', 'danny'],
+    'matthew': ['matt', 'matty'],
+    'anthony': ['tony'],
+    'steven': ['steve'],
+    'stephen': ['steve'],
+    'edward': ['ed', 'eddie', 'ted'],
+    'benjamin': ['ben', 'benny'],
+    'nicholas': ['nick', 'nicky'],
+    'alexander': ['alex'],
+    'jonathan': ['jon', 'john'],
+    'elizabeth': ['liz', 'beth', 'lizzy', 'betty'],
+    'jennifer': ['jen', 'jenny'],
+    'katherine': ['kate', 'kathy', 'katie', 'kat'],
+    'catherine': ['kate', 'cathy', 'katie', 'cat'],
+    'margaret': ['maggie', 'meg', 'peggy'],
+    'patricia': ['pat', 'patty', 'trish'],
+    'rebecca': ['becky', 'becca'],
+    'jessica': ['jess', 'jessie'],
+    'amanda': ['mandy'],
+    'samantha': ['sam', 'sammy'],
+}
+
+# Build reverse lookup: nickname -> canonical
+NICKNAME_TO_CANONICAL = {}
+for canonical, nicknames in NICKNAME_MAP.items():
+    NICKNAME_TO_CANONICAL[canonical] = canonical  # canonical maps to itself
+    for nick in nicknames:
+        NICKNAME_TO_CANONICAL[nick] = canonical
+
+# Specific name aliases for people with different names in different systems
+# Format: 'normalized webex name' -> 'normalized user activity name'
+NAME_ALIASES = {
+    'william meade': 'william addington',
+}
+
 # Initialize session state
 if 'processed' not in st.session_state:
     st.session_state.processed = False
@@ -75,6 +121,33 @@ def normalize_name_for_matching(name):
         return ""
     return str(name).strip().lower()
 
+def normalize_first_name(first_name):
+    """Convert nickname to canonical form (e.g., 'mike' -> 'michael')"""
+    first_lower = first_name.lower()
+    return NICKNAME_TO_CANONICAL.get(first_lower, first_lower)
+
+def get_canonical_name(full_name):
+    """Normalize full name with canonical first name for matching
+    e.g., 'Mike Goss' -> 'michael goss'
+    """
+    if pd.isna(full_name):
+        return ""
+    name_str = str(full_name).strip().lower()
+    parts = name_str.split()
+    if len(parts) >= 1:
+        parts[0] = normalize_first_name(parts[0])
+    return ' '.join(parts)
+
+def get_first_name_only(full_name):
+    """Extract just the first name, normalized to canonical form"""
+    if pd.isna(full_name):
+        return ""
+    name_str = str(full_name).strip().lower()
+    parts = name_str.split()
+    if parts:
+        return normalize_first_name(parts[0])
+    return ""
+
 def convert_lastname_firstname_to_firstname_lastname(name):
     """Convert 'LastName, FirstName' to 'FirstName LastName'"""
     if pd.isna(name):
@@ -106,11 +179,14 @@ def process_webex_file(df, exclude_list=None):
     # Parse agent names (remove extension number)
     df['Agent Name'] = df['Name'].apply(parse_webex_name)
 
-    # Filter out "total" rows and non-agent entries (Sales 5601, CLNIS Operator, etc.)
+    # Filter out "total" rows and non-agent entries
     df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
     df = df[~df['Agent Name'].str.contains(r'\bsales\b', case=False, na=False)]
     df = df[~df['Agent Name'].str.contains(r'\boperator\b', case=False, na=False)]
     df = df[~df['Agent Name'].str.contains(r'\bunassigned\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\bbreak\s*room\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\bcustomer\s*phone\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'^open\b', case=False, na=False)]
 
     # Filter out excluded agents
     if exclude_list:
@@ -180,23 +256,65 @@ def process_user_activity_file(df, exclude_list=None):
     return processed
 
 def combine_cleveland_data(webex_df, user_activity_df):
-    """Combine WebEx and User Activity data for Cleveland
+    """Combine WebEx and User Activity data
 
     WebEx is the primary source (determines which agents appear).
-    User Activity provides text counts, matched by name.
+    User Activity provides text counts, matched by name with smart matching:
+    1. Exact normalized name match
+    2. Check NAME_ALIASES for specific mappings
+    3. Canonical name match (nickname normalization: Mike -> Michael)
+    4. First name only match (fallback)
     """
-    # Create a lookup dict for texts from User Activity (normalized name -> texts)
-    texts_lookup = dict(zip(user_activity_df['Name_Normalized'], user_activity_df['Texts']))
+    # Build multiple lookup dicts for different matching strategies
+    # 1. Exact normalized name -> texts
+    texts_by_normalized = dict(zip(user_activity_df['Name_Normalized'], user_activity_df['Texts']))
+
+    # 2. Canonical name (with nickname normalization) -> texts
+    user_activity_df['Name_Canonical'] = user_activity_df['Agent Name'].apply(get_canonical_name)
+    texts_by_canonical = dict(zip(user_activity_df['Name_Canonical'], user_activity_df['Texts']))
+
+    # 3. First name only -> texts (for fallback, but may have collisions)
+    user_activity_df['First_Name_Canon'] = user_activity_df['Agent Name'].apply(get_first_name_only)
+    # Group by first name - if multiple people have same first name, sum their texts (or take first)
+    texts_by_firstname = dict(zip(user_activity_df['First_Name_Canon'], user_activity_df['Texts']))
+
+    def find_texts(agent_name, normalized_name):
+        """Try multiple matching strategies to find text count"""
+        # 1. Exact normalized name match
+        if normalized_name in texts_by_normalized:
+            return texts_by_normalized[normalized_name]
+
+        # 2. Check NAME_ALIASES
+        if normalized_name in NAME_ALIASES:
+            alias = NAME_ALIASES[normalized_name]
+            if alias in texts_by_normalized:
+                return texts_by_normalized[alias]
+
+        # 3. Canonical name match (nickname normalization)
+        canonical = get_canonical_name(agent_name)
+        if canonical in texts_by_canonical:
+            return texts_by_canonical[canonical]
+
+        # 4. First name only match (fallback)
+        first_name = get_first_name_only(agent_name)
+        if first_name in texts_by_firstname:
+            return texts_by_firstname[first_name]
+
+        return 0
 
     # Build final dataframe based on WebEx agents
     final = pd.DataFrame()
     final['Agent Name'] = webex_df['Agent Name']
     final['Calls'] = pd.to_numeric(webex_df['WebEx_Outgoing'], errors='coerce').fillna(0).astype(int)
     final['Carwars Avg Talk Time'] = webex_df['WebEx_Avg_Time']  # Using same column name for compatibility
-    final['Tecobi Talk Time'] = 0  # No Tecobi for Cleveland - placeholder for column consistency
+    final['Tecobi Talk Time'] = 0  # Placeholder for column consistency
 
-    # Look up texts by normalized name
-    final['Text'] = pd.to_numeric(webex_df['Name_Normalized'].map(texts_lookup), errors='coerce').fillna(0).astype(int)
+    # Look up texts using smart matching
+    final['Text'] = [
+        find_texts(agent, norm)
+        for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
+    ]
+    final['Text'] = pd.to_numeric(final['Text'], errors='coerce').fillna(0).astype(int)
 
     # Sort by first name
     final['First_Name'] = final['Agent Name'].apply(get_first_name)
