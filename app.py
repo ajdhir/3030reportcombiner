@@ -59,89 +59,6 @@ def get_first_name(full_name):
     s = str(full_name).strip()
     return s.split()[0] if s else ""
 
-# NOTE: renamed to avoid collisions with older cached/imported versions
-def process_carwars_file_v2(df, location, exclude_list=None):
-    """Process Carwars file and extract needed columns"""
-    df.columns = df.columns.str.strip()
-
-    # Trim and normalize Agent Name if present
-    if 'Agent Name' in df.columns:
-        df['Agent Name'] = df['Agent Name'].astype(str).str.strip()
-    else:
-        df['Agent Name'] = ""
-
-    # Filter out "total" and "unassigned" rows (case-insensitive)
-    df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
-    df = df[~df['Agent Name'].str.contains(r'\bunassigned\b', case=False, na=False)]
-
-    # Filter out excluded agents (case-insensitive, partial match)
-    if exclude_list:
-        for name in exclude_list:
-            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
-
-    # Reset index after filtering to ensure alignment
-    df = df.reset_index(drop=True)
-
-    processed = pd.DataFrame()
-    processed['Agent Name'] = df['Agent Name']
-    processed['Carwars_Unique_Outbound'] = pd.to_numeric(df.get('Unique Outbound', 0), errors='coerce').fillna(0)
-
-    if 'Avg Talk Time' in df.columns:
-        processed['Carwars_Avg_Talk_Time'] = df['Avg Talk Time'].apply(parse_time_to_excel)
-    else:
-        processed['Carwars_Avg_Talk_Time'] = 0
-
-    # Use Unique OB Text if available, otherwise Total OB Text
-    if 'Unique OB Text' in df.columns:
-        processed['Carwars_OB_Text'] = pd.to_numeric(df['Unique OB Text'], errors='coerce').fillna(0)
-    else:
-        processed['Carwars_OB_Text'] = pd.to_numeric(df.get('Total OB Text', 0), errors='coerce').fillna(0)
-
-    processed['Location'] = location
-    return processed
-
-def process_tecobi_file(df, location, exclude_list=None):
-    """Process Tecobi file and extract needed columns"""
-    df.columns = df.columns.str.strip()
-
-    # Build 'Agent Name' if first/last present; else try to use an existing name field
-    if 'first_name' in df.columns and 'last_name' in df.columns:
-        df['Agent Name'] = (df['first_name'].astype(str).str.strip() + ' ' + df['last_name'].astype(str).str.strip()).str.strip()
-    elif 'Agent Name' in df.columns:
-        df['Agent Name'] = df['Agent Name'].astype(str).str.strip()
-    elif 'name' in df.columns:
-        df['Agent Name'] = df['name'].astype(str).str.strip()
-    else:
-        df['Agent Name'] = ""
-
-    # Filter out "total" and "unassigned" rows (case-insensitive)
-    df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
-    df = df[~df['Agent Name'].str.contains(r'\bunassigned\b', case=False, na=False)]
-
-    # Filter out excluded agents
-    if exclude_list:
-        for name in exclude_list:
-            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
-
-    # Reset index after filtering to ensure alignment
-    df = df.reset_index(drop=True)
-
-    # Tecobi talk time
-    if 'avg_outbound_call_duration' in df.columns:
-        talk_time = pd.to_numeric(df['avg_outbound_call_duration'], errors='coerce').fillna(0)
-    else:
-        seconds = pd.to_numeric(df.get('seconds_clocked_in', 0), errors='coerce').fillna(0)
-        calls = pd.to_numeric(df.get('outbound_calls', 0), errors='coerce').fillna(1).replace(0, 1)
-        talk_time = seconds / calls
-
-    processed = pd.DataFrame()
-    processed['Agent Name'] = df['Agent Name']
-    processed['Tecobi_Outbound_Calls'] = pd.to_numeric(df.get('outbound_calls', 0), errors='coerce').fillna(0)
-    processed['Tecobi_Talk_Time'] = talk_time
-    processed['Tecobi_External_SMS'] = pd.to_numeric(df.get('external_sms', 0), errors='coerce').fillna(0)
-    processed['Location'] = location
-    return processed
-
 def parse_webex_name(name_with_extension):
     """Parse WebEx name format: 'FirstName LastName ( extension )' -> 'FirstName LastName'"""
     if pd.isna(name_with_extension):
@@ -290,52 +207,6 @@ def combine_cleveland_data(webex_df, user_activity_df):
     final['Calls_Highlight'] = (final['Calls'] < 30)
     final['Text_Highlight'] = (final['Text'] < 30)
 
-    return final
-
-def combine_location_data(carwars_df, tecobi_df, location):
-    """Combine Carwars and Tecobi data for a single location"""
-    carwars_loc = carwars_df[carwars_df['Location'] == location].copy()
-    tecobi_loc = tecobi_df[tecobi_df['Location'] == location].copy()
-
-    # Remove Location (not needed after filtering)
-    carwars_loc = carwars_loc.drop(columns=['Location'], errors='ignore')
-    tecobi_loc = tecobi_loc.drop(columns=['Location'], errors='ignore')
-
-    combined = pd.merge(
-        carwars_loc,
-        tecobi_loc,
-        on='Agent Name',
-        how='outer'
-    )
-
-    numeric_columns = [
-        'Carwars_Unique_Outbound', 'Carwars_Avg_Talk_Time', 'Carwars_OB_Text',
-        'Tecobi_Outbound_Calls', 'Tecobi_Talk_Time', 'Tecobi_External_SMS'
-    ]
-    for col in numeric_columns:
-        if col in combined.columns:
-            combined[col] = pd.to_numeric(combined[col], errors='coerce').fillna(0)
-
-    combined['Calls'] = combined.get('Carwars_Unique_Outbound', 0) + combined.get('Tecobi_Outbound_Calls', 0)
-    combined['Text'] = combined.get('Carwars_OB_Text', 0) + combined.get('Tecobi_External_SMS', 0)
-
-    # Final table
-    final = pd.DataFrame({
-        'Agent Name': combined['Agent Name'],
-        'Calls': pd.to_numeric(combined['Calls'], errors='coerce').fillna(0).astype(int),
-        'Carwars Avg Talk Time': combined.get('Carwars_Avg_Talk_Time', 0),
-        'Tecobi Talk Time': combined.get('Tecobi_Talk_Time', 0),
-        'Text': pd.to_numeric(combined['Text'], errors='coerce').fillna(0).astype(int)
-    })
-
-    # Sort by first name
-    final['First_Name'] = final['Agent Name'].apply(get_first_name)
-    final = final.sort_values('First_Name', na_position='last').drop(columns=['First_Name'])
-
-    # Boolean flags for highlighting logic (used only during write)
-    final['Name_Highlight'] = (final['Calls'] < 30) | (final['Text'] < 30)
-    final['Calls_Highlight'] = (final['Calls'] < 30)
-    final['Text_Highlight'] = (final['Text'] < 30)
     return final
 
 def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
@@ -580,29 +451,29 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("📁 Upload Files")
-    st.markdown("Upload all 6 files (2 per location)  \n*Cleveland uses WebEx + User Activity Performance*")
+    st.markdown("Upload all 6 files (2 per location)  \n*All locations use WebEx + User Activity Performance*")
 
     # File uploaders
     st.markdown("**Chattanooga Files:**")
-    chatt_carwars = st.file_uploader("Chattanooga Carwars", type=['xlsx', 'xls', 'csv'], key="chatt_carwars")
-    chatt_tecobi = st.file_uploader("Chattanooga Tecobi", type=['xlsx', 'xls', 'csv'], key="chatt_tecobi")
+    chatt_webex = st.file_uploader("Chattanooga WebEx", type=['xlsx', 'xls', 'csv'], key="chatt_webex")
+    chatt_user_activity = st.file_uploader("Chattanooga User Activity Performance", type=['xlsx', 'xls', 'csv'], key="chatt_user_activity")
 
     st.markdown("**Cleveland Files:**")
     cleve_webex = st.file_uploader("Cleveland WebEx", type=['xlsx', 'xls', 'csv'], key="cleve_webex")
     cleve_user_activity = st.file_uploader("Cleveland User Activity Performance", type=['xlsx', 'xls', 'csv'], key="cleve_user_activity")
 
     st.markdown("**Dalton Files:**")
-    dalton_carwars = st.file_uploader("Dalton Carwars", type=['xlsx', 'xls', 'csv'], key="dalton_carwars")
-    dalton_tecobi = st.file_uploader("Dalton Tecobi", type=['xlsx', 'xls', 'csv'], key="dalton_tecobi")
+    dalton_webex = st.file_uploader("Dalton WebEx", type=['xlsx', 'xls', 'csv'], key="dalton_webex")
+    dalton_user_activity = st.file_uploader("Dalton User Activity Performance", type=['xlsx', 'xls', 'csv'], key="dalton_user_activity")
 
 with col2:
     st.subheader("⚙️ Process Files")
     st.info("ℹ️ The following agents will be automatically excluded: AJ Dhir, Thomas Williams, Mark Moore, Nicole Farr")
 
     all_files_uploaded = all([
-        chatt_carwars, chatt_tecobi,
+        chatt_webex, chatt_user_activity,
         cleve_webex, cleve_user_activity,
-        dalton_carwars, dalton_tecobi
+        dalton_webex, dalton_user_activity
     ])
 
     if all_files_uploaded:
@@ -635,30 +506,20 @@ with col2:
                         # Fallback: just read normally
                         return pd.read_csv(io.BytesIO(content)) if name.endswith('.csv') else pd.read_excel(io.BytesIO(content))
 
-                    # Carwars (Chattanooga and Dalton only - Cleveland uses different systems)
-                    carwars_files = {
-                        'Chattanooga': process_carwars_file_v2(read_file(chatt_carwars), 'Chattanooga', exclude_list=EXCLUDED_AGENTS),
-                        'Dalton':      process_carwars_file_v2(read_file(dalton_carwars), 'Dalton',    exclude_list=EXCLUDED_AGENTS),
-                    }
-
-                    # Tecobi (Chattanooga and Dalton only - Cleveland uses different systems)
-                    tecobi_files = {
-                        'Chattanooga': process_tecobi_file(read_file(chatt_tecobi), 'Chattanooga', exclude_list=EXCLUDED_AGENTS),
-                        'Dalton':      process_tecobi_file(read_file(dalton_tecobi), 'Dalton',     exclude_list=EXCLUDED_AGENTS),
-                    }
-
-                    all_carwars = pd.concat(carwars_files.values(), ignore_index=True)
-                    all_tecobi = pd.concat(tecobi_files.values(), ignore_index=True)
-
-                    # Process Chattanooga and Dalton with Carwars/Tecobi
-                    chattanooga_final = combine_location_data(all_carwars, all_tecobi, 'Chattanooga')
-                    dalton_final      = combine_location_data(all_carwars, all_tecobi, 'Dalton')
+                    # Process Chattanooga with WebEx and User Activity Performance
+                    chatt_webex_df = process_webex_file(read_file_find_header(chatt_webex), exclude_list=EXCLUDED_AGENTS)
+                    chatt_user_activity_df = process_user_activity_file(read_file_find_header(chatt_user_activity), exclude_list=EXCLUDED_AGENTS)
+                    chattanooga_final = combine_cleveland_data(chatt_webex_df, chatt_user_activity_df)
 
                     # Process Cleveland with WebEx and User Activity Performance
-                    # Auto-detect header row by finding 'Name' column
                     cleveland_webex_df = process_webex_file(read_file_find_header(cleve_webex), exclude_list=EXCLUDED_AGENTS)
                     cleveland_user_activity_df = process_user_activity_file(read_file_find_header(cleve_user_activity), exclude_list=EXCLUDED_AGENTS)
                     cleveland_final = combine_cleveland_data(cleveland_webex_df, cleveland_user_activity_df)
+
+                    # Process Dalton with WebEx and User Activity Performance
+                    dalton_webex_df = process_webex_file(read_file_find_header(dalton_webex), exclude_list=EXCLUDED_AGENTS)
+                    dalton_user_activity_df = process_user_activity_file(read_file_find_header(dalton_user_activity), exclude_list=EXCLUDED_AGENTS)
+                    dalton_final = combine_cleveland_data(dalton_webex_df, dalton_user_activity_df)
 
                     # Summary
                     st.markdown("### 📊 Summary")
@@ -687,12 +548,12 @@ with col2:
     else:
         st.warning("⚠️ Please upload all 6 files to continue")
         missing = []
-        if not chatt_carwars:  missing.append("Chattanooga Carwars")
-        if not chatt_tecobi:   missing.append("Chattanooga Tecobi")
+        if not chatt_webex:    missing.append("Chattanooga WebEx")
+        if not chatt_user_activity: missing.append("Chattanooga User Activity Performance")
         if not cleve_webex:    missing.append("Cleveland WebEx")
         if not cleve_user_activity: missing.append("Cleveland User Activity Performance")
-        if not dalton_carwars: missing.append("Dalton Carwars")
-        if not dalton_tecobi:  missing.append("Dalton Tecobi")
+        if not dalton_webex:   missing.append("Dalton WebEx")
+        if not dalton_user_activity: missing.append("Dalton User Activity Performance")
         if missing:
             st.markdown("**Missing files:**")
             for m in missing:
@@ -728,8 +589,7 @@ with st.expander("📖 Instructions & Info"):
     3. **Download** - Get your formatted Excel report
 
     ### File Requirements:
-    - **Chattanooga & Dalton**: Carwars and Tecobi files
-    - **Cleveland**: WebEx (Employee Summary Report) and User Activity Performance files
+    - **All Locations**: WebEx (Employee Summary Report) and User Activity Performance files
 
     ### 30/30 Validation:
     - Agent name is highlighted if **Calls < 30 OR Text < 30**
@@ -738,11 +598,7 @@ with st.expander("📖 Instructions & Info"):
     - (Talk time cells are not highlighted)
 
     ### Data Processing:
-    **Chattanooga & Dalton:**
-    - **Calls** = Carwars "Unique Outbound" + Tecobi "outbound_calls"
-    - **Text** = Carwars "Unique OB Text" + Tecobi "external_sms"
-
-    **Cleveland:**
+    **All Locations (Chattanooga, Cleveland, Dalton):**
     - **Calls** = WebEx "Outgoing"
     - **Talk Time** = WebEx "Average Time"
     - **Text** = User Activity Performance "Texts"
