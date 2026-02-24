@@ -355,14 +355,21 @@ def process_tecobi_file(df, exclude_list=None):
     if ext_sms_col is None:
         raise ValueError(f"Tecobi file must have an 'External SMS' column. Found columns: {list(df.columns)}")
 
-    # Find OutBound column
+    # Find Unique Outbound column
     outbound_col = None
     for col in df.columns:
-        if 'outbound' in col.lower() or 'out bound' in col.lower():
+        col_lower = col.lower()
+        if 'unique' in col_lower and 'outbound' in col_lower:
             outbound_col = col
             break
+    # Fallback to just "outbound" if "unique outbound" not found
     if outbound_col is None:
-        raise ValueError(f"Tecobi file must have an 'OutBound' column. Found columns: {list(df.columns)}")
+        for col in df.columns:
+            if 'outbound' in col.lower() or 'out bound' in col.lower():
+                outbound_col = col
+                break
+    if outbound_col is None:
+        raise ValueError(f"Tecobi file must have a 'Unique Outbound' or 'OutBound' column. Found columns: {list(df.columns)}")
 
     # Handle name format - could be "FirstName LastName" or "LastName, FirstName"
     if df[name_col].astype(str).str.contains(',').any():
@@ -389,27 +396,41 @@ def process_tecobi_file(df, exclude_list=None):
 
     return processed
 
-def combine_chattanooga_data(webex_df, tecobi_df):
-    """Combine WebEx and Tecobi data for Chattanooga
+def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
+    """Combine WebEx, User Activity, and Tecobi data for Chattanooga
 
-    WebEx provides: Agent Name, Average Talk Time
-    Tecobi provides: OutBound (Calls), External SMS (Texts)
+    WebEx provides: Agent Name, Outgoing (Calls), Average Talk Time
+    User Activity provides: Texts
+    Tecobi provides: Unique Outbound (Calls), External SMS (Texts)
+
+    Final Calls = WebEx Outgoing + Tecobi Unique Outbound
+    Final Texts = User Activity Texts + Tecobi External SMS
     """
-    # Build multiple lookup dicts from Tecobi for different matching strategies
-    calls_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['OutBound']))
-    texts_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['External_SMS']))
-
+    # --- Tecobi lookups ---
     tecobi_df = tecobi_df.copy()
+    tecobi_calls_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['OutBound']))
+    tecobi_texts_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['External_SMS']))
+
     tecobi_df['Name_Canonical'] = tecobi_df['Agent Name'].apply(get_canonical_name)
-    calls_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['OutBound']))
-    texts_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['External_SMS']))
+    tecobi_calls_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['OutBound']))
+    tecobi_texts_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['External_SMS']))
 
     tecobi_df['First_Name_Canon'] = tecobi_df['Agent Name'].apply(get_first_name_only)
-    calls_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['OutBound']))
-    texts_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['External_SMS']))
+    tecobi_calls_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['OutBound']))
+    tecobi_texts_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['External_SMS']))
 
-    def find_tecobi_value(agent_name, normalized_name, by_normalized, by_canonical, by_firstname):
-        """Try multiple matching strategies to find a Tecobi value"""
+    # --- User Activity lookups ---
+    ua_texts_by_normalized = dict(zip(user_activity_df['Name_Normalized'], user_activity_df['Texts']))
+
+    user_activity_df = user_activity_df.copy()
+    user_activity_df['Name_Canonical'] = user_activity_df['Agent Name'].apply(get_canonical_name)
+    ua_texts_by_canonical = dict(zip(user_activity_df['Name_Canonical'], user_activity_df['Texts']))
+
+    user_activity_df['First_Name_Canon'] = user_activity_df['Agent Name'].apply(get_first_name_only)
+    ua_texts_by_firstname = dict(zip(user_activity_df['First_Name_Canon'], user_activity_df['Texts']))
+
+    def find_value(agent_name, normalized_name, by_normalized, by_canonical, by_firstname):
+        """Try multiple matching strategies to find a value"""
         # 1. Exact normalized name match
         if normalized_name in by_normalized:
             return by_normalized[normalized_name]
@@ -431,17 +452,30 @@ def combine_chattanooga_data(webex_df, tecobi_df):
     # Build final dataframe based on WebEx agents
     final = pd.DataFrame()
     final['Agent Name'] = webex_df['Agent Name']
-    final['Calls'] = [
-        find_tecobi_value(agent, norm, calls_by_normalized, calls_by_canonical, calls_by_firstname)
+
+    # Calls = WebEx Outgoing + Tecobi Unique Outbound
+    webex_calls = pd.to_numeric(webex_df['WebEx_Outgoing'], errors='coerce').fillna(0).astype(int)
+    tecobi_calls = [
+        find_value(agent, norm, tecobi_calls_by_normalized, tecobi_calls_by_canonical, tecobi_calls_by_firstname)
         for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
     ]
-    final['Calls'] = pd.to_numeric(final['Calls'], errors='coerce').fillna(0).astype(int)
+    tecobi_calls = pd.to_numeric(pd.Series(tecobi_calls, index=webex_df.index), errors='coerce').fillna(0).astype(int)
+    final['Calls'] = (webex_calls.values + tecobi_calls.values)
+
     final['Webex Avg Talk Time'] = webex_df['WebEx_Avg_Time']
-    final['Text'] = [
-        find_tecobi_value(agent, norm, texts_by_normalized, texts_by_canonical, texts_by_firstname)
+
+    # Text = User Activity Texts + Tecobi External SMS
+    ua_texts = [
+        find_value(agent, norm, ua_texts_by_normalized, ua_texts_by_canonical, ua_texts_by_firstname)
         for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
     ]
-    final['Text'] = pd.to_numeric(final['Text'], errors='coerce').fillna(0).astype(int)
+    ua_texts = pd.to_numeric(pd.Series(ua_texts, index=webex_df.index), errors='coerce').fillna(0).astype(int)
+    tecobi_texts = [
+        find_value(agent, norm, tecobi_texts_by_normalized, tecobi_texts_by_canonical, tecobi_texts_by_firstname)
+        for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
+    ]
+    tecobi_texts = pd.to_numeric(pd.Series(tecobi_texts, index=webex_df.index), errors='coerce').fillna(0).astype(int)
+    final['Text'] = (ua_texts.values + tecobi_texts.values)
 
     # Sort by first name
     final['First_Name'] = final['Agent Name'].apply(get_first_name)
@@ -692,11 +726,12 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("📁 Upload Files")
-    st.markdown("Upload all 6 files (2 per location)")
+    st.markdown("Upload all 7 files (3 for Chattanooga, 2 each for Cleveland & Dalton)")
 
     # File uploaders
     st.markdown("**Chattanooga Files:**")
     chatt_webex = st.file_uploader("Chattanooga WebEx", type=['xlsx', 'xls', 'csv'], key="chatt_webex")
+    chatt_user_activity = st.file_uploader("Chattanooga User Activity Performance", type=['xlsx', 'xls', 'csv'], key="chatt_user_activity")
     chatt_tecobi = st.file_uploader("Chattanooga Tecobi", type=['xlsx', 'xls', 'csv'], key="chatt_tecobi")
 
     st.markdown("**Cleveland Files:**")
@@ -712,7 +747,7 @@ with col2:
     st.info("ℹ️ The following agents will be automatically excluded: AJ Dhir, Thomas Williams, Mark Moore, Nicole Farr")
 
     all_files_uploaded = all([
-        chatt_webex, chatt_tecobi,
+        chatt_webex, chatt_user_activity, chatt_tecobi,
         cleve_webex, cleve_user_activity,
         dalton_webex, dalton_user_activity
     ])
@@ -747,10 +782,11 @@ with col2:
                         # Fallback: just read normally
                         return pd.read_csv(io.BytesIO(content)) if name.endswith('.csv') else pd.read_excel(io.BytesIO(content))
 
-                    # Process Chattanooga with WebEx and Tecobi
+                    # Process Chattanooga with WebEx, User Activity, and Tecobi
                     chatt_webex_df = process_webex_file(read_file_find_header(chatt_webex), exclude_list=EXCLUDED_AGENTS)
+                    chatt_user_activity_df = process_user_activity_file(read_file_find_header(chatt_user_activity), exclude_list=EXCLUDED_AGENTS)
                     chatt_tecobi_df = process_tecobi_file(read_file_find_header(chatt_tecobi), exclude_list=EXCLUDED_AGENTS)
-                    chattanooga_final = combine_chattanooga_data(chatt_webex_df, chatt_tecobi_df)
+                    chattanooga_final = combine_chattanooga_data(chatt_webex_df, chatt_user_activity_df, chatt_tecobi_df)
 
                     # Process Cleveland with WebEx and User Activity Performance
                     cleveland_webex_df = process_webex_file(read_file_find_header(cleve_webex), exclude_list=EXCLUDED_AGENTS)
@@ -787,10 +823,11 @@ with col2:
                 st.markdown("**Debug Information:**")
                 st.code(str(e))
     else:
-        st.warning("⚠️ Please upload all 6 files to continue")
+        st.warning("⚠️ Please upload all 7 files to continue")
         missing = []
-        if not chatt_webex:    missing.append("Chattanooga WebEx")
-        if not chatt_tecobi:       missing.append("Chattanooga Tecobi")
+        if not chatt_webex:          missing.append("Chattanooga WebEx")
+        if not chatt_user_activity:  missing.append("Chattanooga User Activity Performance")
+        if not chatt_tecobi:         missing.append("Chattanooga Tecobi")
         if not cleve_webex:    missing.append("Cleveland WebEx")
         if not cleve_user_activity: missing.append("Cleveland User Activity Performance")
         if not dalton_webex:   missing.append("Dalton WebEx")
@@ -825,12 +862,12 @@ st.markdown("---")
 with st.expander("📖 Instructions & Info"):
     st.markdown("""
     ### How to Use:
-    1. **Upload all 6 files** - Files for each location as specified
+    1. **Upload all 7 files** - Files for each location as specified
     2. **Click Process** - The app will combine and validate the data
     3. **Download** - Get your formatted Excel report
 
     ### File Requirements:
-    - **Chattanooga**: WebEx (Employee Summary Report) + Tecobi report
+    - **Chattanooga**: WebEx (Employee Summary Report) + User Activity Performance + Tecobi report
     - **Cleveland & Dalton**: WebEx (Employee Summary Report) + User Activity Performance
 
     ### 30/30 Validation:
@@ -840,9 +877,9 @@ with st.expander("📖 Instructions & Info"):
 
     ### Data Processing:
     **Chattanooga:**
-    - **Calls** = Tecobi "OutBound"
+    - **Calls** = WebEx "Outgoing" + Tecobi "Unique Outbound"
     - **Talk Time** = WebEx "Average Time"
-    - **Text** = Tecobi "External SMS"
+    - **Text** = User Activity Performance "Texts" + Tecobi "External SMS"
 
     **Cleveland & Dalton:**
     - **Calls** = WebEx "Outgoing"
