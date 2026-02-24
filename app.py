@@ -55,6 +55,7 @@ NICKNAME_MAP = {
     'jessica': ['jess', 'jessie'],
     'amanda': ['mandy'],
     'samantha': ['sam', 'sammy'],
+    'timothy': ['tim', 'timmy'],
 }
 
 # Build reverse lookup: nickname -> canonical
@@ -262,8 +263,7 @@ def combine_cleveland_data(webex_df, user_activity_df):
     User Activity provides text counts, matched by name with smart matching:
     1. Exact normalized name match
     2. Check NAME_ALIASES for specific mappings
-    3. Canonical name match (nickname normalization: Mike -> Michael)
-    4. First name only match (fallback)
+    3. Canonical name match (nickname normalization: Mike -> Michael, Tim -> Timothy)
     """
     # Build multiple lookup dicts for different matching strategies
     # 1. Exact normalized name -> texts
@@ -273,10 +273,6 @@ def combine_cleveland_data(webex_df, user_activity_df):
     user_activity_df['Name_Canonical'] = user_activity_df['Agent Name'].apply(get_canonical_name)
     texts_by_canonical = dict(zip(user_activity_df['Name_Canonical'], user_activity_df['Texts']))
 
-    # 3. First name only -> texts (for fallback, but may have collisions)
-    user_activity_df['First_Name_Canon'] = user_activity_df['Agent Name'].apply(get_first_name_only)
-    # Group by first name - if multiple people have same first name, sum their texts (or take first)
-    texts_by_firstname = dict(zip(user_activity_df['First_Name_Canon'], user_activity_df['Texts']))
 
     def find_texts(agent_name, normalized_name):
         """Try multiple matching strategies to find text count"""
@@ -294,11 +290,6 @@ def combine_cleveland_data(webex_df, user_activity_df):
         canonical = get_canonical_name(agent_name)
         if canonical in texts_by_canonical:
             return texts_by_canonical[canonical]
-
-        # 4. First name only match (fallback)
-        first_name = get_first_name_only(agent_name)
-        if first_name in texts_by_firstname:
-            return texts_by_firstname[first_name]
 
         return 0
 
@@ -425,9 +416,6 @@ def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
     tecobi_calls_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['OutBound']))
     tecobi_texts_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['External_SMS']))
 
-    tecobi_df['First_Name_Canon'] = tecobi_df['Agent Name'].apply(get_first_name_only)
-    tecobi_calls_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['OutBound']))
-    tecobi_texts_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['External_SMS']))
 
     # --- User Activity lookups ---
     ua_texts_by_normalized = dict(zip(user_activity_df['Name_Normalized'], user_activity_df['Texts']))
@@ -436,10 +424,8 @@ def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
     user_activity_df['Name_Canonical'] = user_activity_df['Agent Name'].apply(get_canonical_name)
     ua_texts_by_canonical = dict(zip(user_activity_df['Name_Canonical'], user_activity_df['Texts']))
 
-    user_activity_df['First_Name_Canon'] = user_activity_df['Agent Name'].apply(get_first_name_only)
-    ua_texts_by_firstname = dict(zip(user_activity_df['First_Name_Canon'], user_activity_df['Texts']))
 
-    def find_value(agent_name, normalized_name, by_normalized, by_canonical, by_firstname):
+    def find_value(agent_name, normalized_name, by_normalized, by_canonical):
         """Try multiple matching strategies to find a value"""
         # 1. Exact normalized name match
         if normalized_name in by_normalized:
@@ -453,10 +439,6 @@ def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
         canonical = get_canonical_name(agent_name)
         if canonical in by_canonical:
             return by_canonical[canonical]
-        # 4. First name only match (fallback)
-        first_name = get_first_name_only(agent_name)
-        if first_name in by_firstname:
-            return by_firstname[first_name]
         return 0
 
     # Build final dataframe based on WebEx agents
@@ -466,7 +448,7 @@ def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
     # Calls = WebEx Outgoing + Tecobi Unique Outbound
     webex_calls = pd.to_numeric(webex_df['WebEx_Outgoing'], errors='coerce').fillna(0).astype(int)
     tecobi_calls = [
-        find_value(agent, norm, tecobi_calls_by_normalized, tecobi_calls_by_canonical, tecobi_calls_by_firstname)
+        find_value(agent, norm, tecobi_calls_by_normalized, tecobi_calls_by_canonical)
         for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
     ]
     tecobi_calls = pd.to_numeric(pd.Series(tecobi_calls, index=webex_df.index), errors='coerce').fillna(0).astype(int)
@@ -476,12 +458,12 @@ def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
 
     # Text = User Activity Texts + Tecobi External SMS
     ua_texts = [
-        find_value(agent, norm, ua_texts_by_normalized, ua_texts_by_canonical, ua_texts_by_firstname)
+        find_value(agent, norm, ua_texts_by_normalized, ua_texts_by_canonical)
         for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
     ]
     ua_texts = pd.to_numeric(pd.Series(ua_texts, index=webex_df.index), errors='coerce').fillna(0).astype(int)
     tecobi_texts = [
-        find_value(agent, norm, tecobi_texts_by_normalized, tecobi_texts_by_canonical, tecobi_texts_by_firstname)
+        find_value(agent, norm, tecobi_texts_by_normalized, tecobi_texts_by_canonical)
         for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
     ]
     tecobi_texts = pd.to_numeric(pd.Series(tecobi_texts, index=webex_df.index), errors='coerce').fillna(0).astype(int)
