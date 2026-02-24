@@ -373,9 +373,12 @@ def process_tecobi_file(df, exclude_list=None):
             outbound_col = col
             break
     # Fallback to just "outbound" if "unique outbound" not found
+    # Skip columns containing "avg", "average", or "duration" to avoid matching avg_outbound_call_duration
     if outbound_col is None:
         for col in df.columns:
-            if 'outbound' in col.lower() or 'out bound' in col.lower():
+            col_lower = col.lower()
+            if ('outbound' in col_lower or 'out bound' in col_lower) and \
+               'avg' not in col_lower and 'average' not in col_lower and 'duration' not in col_lower:
                 outbound_col = col
                 break
     if outbound_col is None:
@@ -398,10 +401,23 @@ def process_tecobi_file(df, exclude_list=None):
     df = df[df['Agent Name'].str.strip() != '']
     df = df.reset_index(drop=True)
 
+    # Find avg outbound call duration column (in seconds)
+    avg_duration_col = None
+    for col in df.columns:
+        col_lower = col.lower()
+        if 'avg' in col_lower and 'outbound' in col_lower and 'duration' in col_lower:
+            avg_duration_col = col
+            break
+
     processed = pd.DataFrame()
     processed['Agent Name'] = df['Agent Name']
     processed['External_SMS'] = pd.to_numeric(df[ext_sms_col], errors='coerce').fillna(0)
     processed['OutBound'] = pd.to_numeric(df[outbound_col], errors='coerce').fillna(0)
+    # Avg outbound call duration in seconds, convert to Excel fraction of day
+    if avg_duration_col is not None:
+        processed['Avg_Duration'] = pd.to_numeric(df[avg_duration_col], errors='coerce').fillna(0) / 86400
+    else:
+        processed['Avg_Duration'] = 0
     processed['Name_Normalized'] = processed['Agent Name'].apply(normalize_name_for_matching)
 
     return processed
@@ -420,14 +436,17 @@ def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
     tecobi_df = tecobi_df.copy()
     tecobi_calls_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['OutBound']))
     tecobi_texts_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['External_SMS']))
+    tecobi_avgdur_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['Avg_Duration']))
 
     tecobi_df['Name_Canonical'] = tecobi_df['Agent Name'].apply(get_canonical_name)
     tecobi_calls_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['OutBound']))
     tecobi_texts_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['External_SMS']))
+    tecobi_avgdur_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['Avg_Duration']))
 
     tecobi_df['First_Name_Canon'] = tecobi_df['Agent Name'].apply(get_first_name_only)
     tecobi_calls_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['OutBound']))
     tecobi_texts_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['External_SMS']))
+    tecobi_avgdur_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['Avg_Duration']))
 
     # --- User Activity lookups ---
     ua_texts_by_normalized = dict(zip(user_activity_df['Name_Normalized'], user_activity_df['Texts']))
@@ -472,7 +491,28 @@ def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
     tecobi_calls = pd.to_numeric(pd.Series(tecobi_calls, index=webex_df.index), errors='coerce').fillna(0).astype(int)
     final['Calls'] = (webex_calls.values + tecobi_calls.values)
 
-    final['Webex Avg Talk Time'] = webex_df['WebEx_Avg_Time']
+    # Weighted average talk time: blend WebEx and Tecobi avg durations by call count
+    # Only includes Tecobi avg duration if the agent made Tecobi calls
+    tecobi_avg_durations = [
+        find_value(agent, norm, tecobi_avgdur_by_normalized, tecobi_avgdur_by_canonical, tecobi_avgdur_by_firstname)
+        for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
+    ]
+    webex_avg_times = webex_df['WebEx_Avg_Time'].values
+    webex_call_counts = pd.to_numeric(webex_df['WebEx_Outgoing'], errors='coerce').fillna(0).values
+    tecobi_call_counts = tecobi_calls.values
+
+    combined_avg_time = []
+    for w_avg, w_count, t_avg, t_count in zip(webex_avg_times, webex_call_counts, tecobi_avg_durations, tecobi_call_counts):
+        w_avg = float(w_avg) if not pd.isna(w_avg) else 0
+        t_avg = float(t_avg) if not pd.isna(t_avg) else 0
+        total_calls = w_count + t_count
+        if total_calls > 0 and t_count > 0:
+            # Weighted average of both
+            combined_avg_time.append((w_avg * w_count + t_avg * t_count) / total_calls)
+        else:
+            # No Tecobi calls, just use WebEx avg
+            combined_avg_time.append(w_avg)
+    final['Webex Avg Talk Time'] = combined_avg_time
 
     # Text = User Activity Texts + Tecobi External SMS
     ua_texts = [
