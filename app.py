@@ -766,13 +766,21 @@ with col2:
                         if name.endswith('.csv'):
                             lines = content.decode('utf-8', errors='ignore').split('\n')
                             for i, line in enumerate(lines):
-                                # Check if line starts with "Name" (quoted or unquoted)
-                                if line.startswith('"Name"') or line.startswith('Name,'):
-                                    # Use BytesIO to read from content, not the original file
+                                # Check if line contains "Name" as a column header
+                                fields = [f.strip().strip('"') for f in line.split(',')]
+                                if 'Name' in fields:
                                     return pd.read_csv(io.BytesIO(content), skiprows=i)
-
-                        # Fallback: just read normally
-                        return pd.read_csv(io.BytesIO(content)) if name.endswith('.csv') else pd.read_excel(io.BytesIO(content))
+                            # Fallback: just read normally
+                            return pd.read_csv(io.BytesIO(content))
+                        else:
+                            # Excel files: scan first rows for the header containing 'Name'
+                            df_raw = pd.read_excel(io.BytesIO(content), header=None)
+                            for i, row in df_raw.iterrows():
+                                row_values = [str(v).strip().strip('"') for v in row.values if not pd.isna(v)]
+                                if 'Name' in row_values:
+                                    return pd.read_excel(io.BytesIO(content), header=i)
+                            # Fallback: assume first row is header
+                            return pd.read_excel(io.BytesIO(content))
 
                     # Process Chattanooga with WebEx, User Activity, and Tecobi
                     chatt_webex_df = process_webex_file(read_file_find_header(chatt_webex), exclude_list=EXCLUDED_AGENTS)
