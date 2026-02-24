@@ -339,12 +339,22 @@ def process_tecobi_file(df, exclude_list=None):
 
     # Find name column (try common variations)
     name_col = None
+    first_name_col = None
+    last_name_col = None
     for col in df.columns:
         if col.lower().strip() in ['name', 'agent', 'agent name']:
             name_col = col
             break
+        if col.lower().strip() == 'first_name':
+            first_name_col = col
+        if col.lower().strip() == 'last_name':
+            last_name_col = col
+    # If no single name column, combine first_name + last_name
+    if name_col is None and first_name_col and last_name_col:
+        df['_combined_name'] = df[first_name_col].astype(str).str.strip() + ' ' + df[last_name_col].astype(str).str.strip()
+        name_col = '_combined_name'
     if name_col is None:
-        raise ValueError(f"Tecobi file must have a 'Name' or 'Agent' column. Found columns: {list(df.columns)}")
+        raise ValueError(f"Tecobi file must have a 'Name' or 'Agent' column (or 'first_name' + 'last_name'). Found columns: {list(df.columns)}")
 
     # Find External SMS column
     ext_sms_col = None
