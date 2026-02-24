@@ -306,8 +306,7 @@ def combine_cleveland_data(webex_df, user_activity_df):
     final = pd.DataFrame()
     final['Agent Name'] = webex_df['Agent Name']
     final['Calls'] = pd.to_numeric(webex_df['WebEx_Outgoing'], errors='coerce').fillna(0).astype(int)
-    final['Carwars Avg Talk Time'] = webex_df['WebEx_Avg_Time']  # Using same column name for compatibility
-    final['Tecobi Talk Time'] = 0  # Placeholder for column consistency
+    final['Webex Avg Talk Time'] = webex_df['WebEx_Avg_Time']
 
     # Look up texts using smart matching
     final['Text'] = [
@@ -327,8 +326,170 @@ def combine_cleveland_data(webex_df, user_activity_df):
 
     return final
 
+def process_tecobi_file(df, exclude_list=None):
+    """Process Tecobi report for Chattanooga
+
+    Extracts:
+    - Agent Name
+    - External SMS (for texts)
+    - OutBound (for calls)
+    """
+    df = df.reset_index(drop=True)
+    df.columns = df.columns.astype(str).str.strip().str.strip('"')
+
+    # Find name column (try common variations)
+    name_col = None
+    for col in df.columns:
+        if col.lower().strip() in ['name', 'agent', 'agent name']:
+            name_col = col
+            break
+    if name_col is None:
+        raise ValueError(f"Tecobi file must have a 'Name' or 'Agent' column. Found columns: {list(df.columns)}")
+
+    # Find External SMS column
+    ext_sms_col = None
+    for col in df.columns:
+        if 'external' in col.lower() and 'sms' in col.lower():
+            ext_sms_col = col
+            break
+    if ext_sms_col is None:
+        raise ValueError(f"Tecobi file must have an 'External SMS' column. Found columns: {list(df.columns)}")
+
+    # Find Unique Outbound column
+    outbound_col = None
+    for col in df.columns:
+        col_lower = col.lower()
+        if 'unique' in col_lower and 'outbound' in col_lower:
+            outbound_col = col
+            break
+    # Fallback to just "outbound" if "unique outbound" not found
+    if outbound_col is None:
+        for col in df.columns:
+            if 'outbound' in col.lower() or 'out bound' in col.lower():
+                outbound_col = col
+                break
+    if outbound_col is None:
+        raise ValueError(f"Tecobi file must have a 'Unique Outbound' or 'OutBound' column. Found columns: {list(df.columns)}")
+
+    # Handle name format - could be "FirstName LastName" or "LastName, FirstName"
+    if df[name_col].astype(str).str.contains(',').any():
+        df['Agent Name'] = df[name_col].apply(convert_lastname_firstname_to_firstname_lastname)
+    else:
+        df['Agent Name'] = df[name_col].apply(lambda x: str(x).strip() if not pd.isna(x) else "")
+
+    # Filter out non-agent rows
+    df = df[~df['Agent Name'].str.contains(r'\btotal\b', case=False, na=False)]
+    df = df[~df['Agent Name'].str.contains(r'\bunassigned\b', case=False, na=False)]
+
+    if exclude_list:
+        for name in exclude_list:
+            df = df[~df['Agent Name'].str.lower().str.contains(name.lower(), na=False)]
+
+    df = df[df['Agent Name'].str.strip() != '']
+    df = df.reset_index(drop=True)
+
+    processed = pd.DataFrame()
+    processed['Agent Name'] = df['Agent Name']
+    processed['External_SMS'] = pd.to_numeric(df[ext_sms_col], errors='coerce').fillna(0)
+    processed['OutBound'] = pd.to_numeric(df[outbound_col], errors='coerce').fillna(0)
+    processed['Name_Normalized'] = processed['Agent Name'].apply(normalize_name_for_matching)
+
+    return processed
+
+def combine_chattanooga_data(webex_df, user_activity_df, tecobi_df):
+    """Combine WebEx, User Activity, and Tecobi data for Chattanooga
+
+    WebEx provides: Agent Name, Outgoing (Calls), Average Talk Time
+    User Activity provides: Texts
+    Tecobi provides: Unique Outbound (Calls), External SMS (Texts)
+
+    Final Calls = WebEx Outgoing + Tecobi Unique Outbound
+    Final Texts = User Activity Texts + Tecobi External SMS
+    """
+    # --- Tecobi lookups ---
+    tecobi_df = tecobi_df.copy()
+    tecobi_calls_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['OutBound']))
+    tecobi_texts_by_normalized = dict(zip(tecobi_df['Name_Normalized'], tecobi_df['External_SMS']))
+
+    tecobi_df['Name_Canonical'] = tecobi_df['Agent Name'].apply(get_canonical_name)
+    tecobi_calls_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['OutBound']))
+    tecobi_texts_by_canonical = dict(zip(tecobi_df['Name_Canonical'], tecobi_df['External_SMS']))
+
+    tecobi_df['First_Name_Canon'] = tecobi_df['Agent Name'].apply(get_first_name_only)
+    tecobi_calls_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['OutBound']))
+    tecobi_texts_by_firstname = dict(zip(tecobi_df['First_Name_Canon'], tecobi_df['External_SMS']))
+
+    # --- User Activity lookups ---
+    ua_texts_by_normalized = dict(zip(user_activity_df['Name_Normalized'], user_activity_df['Texts']))
+
+    user_activity_df = user_activity_df.copy()
+    user_activity_df['Name_Canonical'] = user_activity_df['Agent Name'].apply(get_canonical_name)
+    ua_texts_by_canonical = dict(zip(user_activity_df['Name_Canonical'], user_activity_df['Texts']))
+
+    user_activity_df['First_Name_Canon'] = user_activity_df['Agent Name'].apply(get_first_name_only)
+    ua_texts_by_firstname = dict(zip(user_activity_df['First_Name_Canon'], user_activity_df['Texts']))
+
+    def find_value(agent_name, normalized_name, by_normalized, by_canonical, by_firstname):
+        """Try multiple matching strategies to find a value"""
+        # 1. Exact normalized name match
+        if normalized_name in by_normalized:
+            return by_normalized[normalized_name]
+        # 2. Check NAME_ALIASES
+        if normalized_name in NAME_ALIASES:
+            alias = NAME_ALIASES[normalized_name]
+            if alias in by_normalized:
+                return by_normalized[alias]
+        # 3. Canonical name match (nickname normalization)
+        canonical = get_canonical_name(agent_name)
+        if canonical in by_canonical:
+            return by_canonical[canonical]
+        # 4. First name only match (fallback)
+        first_name = get_first_name_only(agent_name)
+        if first_name in by_firstname:
+            return by_firstname[first_name]
+        return 0
+
+    # Build final dataframe based on WebEx agents
+    final = pd.DataFrame()
+    final['Agent Name'] = webex_df['Agent Name']
+
+    # Calls = WebEx Outgoing + Tecobi Unique Outbound
+    webex_calls = pd.to_numeric(webex_df['WebEx_Outgoing'], errors='coerce').fillna(0).astype(int)
+    tecobi_calls = [
+        find_value(agent, norm, tecobi_calls_by_normalized, tecobi_calls_by_canonical, tecobi_calls_by_firstname)
+        for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
+    ]
+    tecobi_calls = pd.to_numeric(pd.Series(tecobi_calls, index=webex_df.index), errors='coerce').fillna(0).astype(int)
+    final['Calls'] = (webex_calls.values + tecobi_calls.values)
+
+    final['Webex Avg Talk Time'] = webex_df['WebEx_Avg_Time']
+
+    # Text = User Activity Texts + Tecobi External SMS
+    ua_texts = [
+        find_value(agent, norm, ua_texts_by_normalized, ua_texts_by_canonical, ua_texts_by_firstname)
+        for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
+    ]
+    ua_texts = pd.to_numeric(pd.Series(ua_texts, index=webex_df.index), errors='coerce').fillna(0).astype(int)
+    tecobi_texts = [
+        find_value(agent, norm, tecobi_texts_by_normalized, tecobi_texts_by_canonical, tecobi_texts_by_firstname)
+        for agent, norm in zip(webex_df['Agent Name'], webex_df['Name_Normalized'])
+    ]
+    tecobi_texts = pd.to_numeric(pd.Series(tecobi_texts, index=webex_df.index), errors='coerce').fillna(0).astype(int)
+    final['Text'] = (ua_texts.values + tecobi_texts.values)
+
+    # Sort by first name
+    final['First_Name'] = final['Agent Name'].apply(get_first_name)
+    final = final.sort_values('First_Name', na_position='last').drop(columns=['First_Name'])
+
+    # Boolean flags for highlighting logic
+    final['Name_Highlight'] = (final['Calls'] < 30) | (final['Text'] < 30)
+    final['Calls_Highlight'] = (final['Calls'] < 30)
+    final['Text_Highlight'] = (final['Text'] < 30)
+
+    return final
+
 def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
-    """Create the final formatted Excel file with thick RIGHT borders, totals, and a summary block in Q/R/S"""
+    """Create the final formatted Excel file with thick RIGHT borders, totals, and a summary block"""
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -377,54 +538,54 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
 
         worksheet = writer.book.add_worksheet('Sheet1')
 
-        # Column widths
+        # Column widths (4 cols per location: Name, Calls, Talk Time, Text)
+        # Chattanooga: A-D
         worksheet.set_column('A:A', 18)
         worksheet.set_column('B:B', 8)
         worksheet.set_column('C:C', 12)
-        worksheet.set_column('D:D', 12)
-        worksheet.set_column('E:E', 8)
+        worksheet.set_column('D:D', 8)
 
-        worksheet.set_column('F:F', 18)
-        worksheet.set_column('G:G', 8)
-        worksheet.set_column('H:H', 12)
-        worksheet.set_column('I:I', 12)
+        # Cleveland: E-H
+        worksheet.set_column('E:E', 18)
+        worksheet.set_column('F:F', 8)
+        worksheet.set_column('G:G', 12)
+        worksheet.set_column('H:H', 8)
+
+        # Dalton: I-L
+        worksheet.set_column('I:I', 18)
         worksheet.set_column('J:J', 8)
-
-        worksheet.set_column('K:K', 18)
+        worksheet.set_column('K:K', 12)
         worksheet.set_column('L:L', 8)
-        worksheet.set_column('M:M', 12)
-        worksheet.set_column('N:N', 12)
-        worksheet.set_column('O:O', 8)
 
         # Spacer
-        worksheet.set_column('P:P', 2)
-        # Summary area columns (Q,R,S)
-        worksheet.set_column('Q:Q', 14)
-        worksheet.set_column('R:R', 10)
-        worksheet.set_column('S:S', 10)
+        worksheet.set_column('M:M', 2)
+        # Summary area columns (N,O,P)
+        worksheet.set_column('N:N', 14)
+        worksheet.set_column('O:O', 10)
+        worksheet.set_column('P:P', 10)
 
         # Headers
-        worksheet.merge_range('A1:E1', 'Chattanooga', location_header_format)
-        worksheet.merge_range('F1:J1', 'Cleveland', location_header_format)
-        worksheet.merge_range('K1:O1', 'Dalton', location_header_format)
+        worksheet.merge_range('A1:D1', 'Chattanooga', location_header_format)
+        worksheet.merge_range('E1:H1', 'Cleveland', location_header_format)
+        worksheet.merge_range('I1:L1', 'Dalton', location_header_format)
 
-        headers = ['Agent Name', 'Calls', 'Carwars Avg\nTalk Time', 'Tecobi\nTalk Time\n(seconds)', 'Text']
+        headers = ['Agent Name', 'Calls', 'Webex Avg\nTalk Time', 'Text']
 
-        # Chattanooga header row (thick RIGHT on column E)
+        # Chattanooga header row (thick RIGHT on column D)
         for i, h in enumerate(headers):
-            fmt = header_format_thickright if i == 4 else header_format
+            fmt = header_format_thickright if i == 3 else header_format
             worksheet.write(1, i, h, fmt)
 
-        # Cleveland header row (thick RIGHT on column J)
+        # Cleveland header row (thick RIGHT on column H)
         for i, h in enumerate(headers):
-            base_col = 5 + i
-            fmt = header_format_thickright if base_col == 9 else header_format
+            base_col = 4 + i
+            fmt = header_format_thickright if base_col == 7 else header_format
             worksheet.write(1, base_col, h, fmt)
 
-        # Dalton header row (thick RIGHT on column O)
+        # Dalton header row (thick RIGHT on column L)
         for i, h in enumerate(headers):
-            base_col = 10 + i
-            fmt = header_format_thickright if base_col == 14 else header_format
+            base_col = 8 + i
+            fmt = header_format_thickright if base_col == 11 else header_format
             worksheet.write(1, base_col, h, fmt)
 
         # Rows
@@ -440,7 +601,7 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
                 return val
 
             def write_block(base_col, rowdata, thickright_cols=None):
-                """Write one 5-col block; thickright_cols are absolute excel columns needing right=2."""
+                """Write one 4-col block; thickright_cols are absolute excel columns needing right=2."""
                 thickright_cols = thickright_cols or set()
 
                 # Name format
@@ -450,50 +611,46 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
                 calls_fmt = number_format_highlight if rowdata['Calls_Highlight'] else number_format
 
                 # Time formats - highlight if under 10 seconds
-                # 10 seconds as Excel time fraction = 10 / (24 * 60 * 60) = 0.00011574
                 ten_seconds_excel = 10 / (24 * 60 * 60)
-                talk_time_val = safe_num(rowdata['Carwars Avg Talk Time'])
+                talk_time_val = safe_num(rowdata['Webex Avg Talk Time'])
                 talk_time_highlight = talk_time_val > 0 and talk_time_val < ten_seconds_excel
-                carwars_time_fmt = time_format_highlight if talk_time_highlight else time_format
-
-                tecobi_time_fmt = number_format  # seconds as plain number
+                webex_time_fmt = time_format_highlight if talk_time_highlight else time_format
 
                 # Text format (highlight only if Text < 30)
                 text_num_fmt = number_format_highlight if rowdata['Text_Highlight'] else number_format
 
-                # Apply thick RIGHT on the Text column for E, J, O
-                abs_text_col = base_col + 4
+                # Apply thick RIGHT on the Text column for D, H, L
+                abs_text_col = base_col + 3
                 if abs_text_col in thickright_cols:
                     text_num_fmt = number_format_highlight_thickright if rowdata['Text_Highlight'] else number_format_thickright
 
                 worksheet.write(excel_row, base_col + 0, rowdata['Agent Name'], name_fmt)
                 worksheet.write(excel_row, base_col + 1, int(safe_num(rowdata['Calls'])), calls_fmt)
-                worksheet.write(excel_row, base_col + 2, talk_time_val, carwars_time_fmt)
-                worksheet.write(excel_row, base_col + 3, safe_num(rowdata['Tecobi Talk Time']), tecobi_time_fmt)
-                worksheet.write(excel_row, base_col + 4, int(safe_num(rowdata['Text'])), text_num_fmt)
+                worksheet.write(excel_row, base_col + 2, talk_time_val, webex_time_fmt)
+                worksheet.write(excel_row, base_col + 3, int(safe_num(rowdata['Text'])), text_num_fmt)
 
-            # Chattanooga (block base_col=0); thick RIGHT on column E -> absolute col 4
+            # Chattanooga (block base_col=0); thick RIGHT on column D -> absolute col 3
             if row_idx < len(chattanooga_data):
-                write_block(0, chattanooga_data.iloc[row_idx], thickright_cols={4})
+                write_block(0, chattanooga_data.iloc[row_idx], thickright_cols={3})
             else:
-                for c in range(0, 5):
-                    fmt = empty_format_thickright if c == 4 else empty_format  # thick-right on E
+                for c in range(0, 4):
+                    fmt = empty_format_thickright if c == 3 else empty_format
                     worksheet.write(excel_row, c, '', fmt)
 
-            # Cleveland (block base_col=5); thick RIGHT on column J -> absolute col 9
+            # Cleveland (block base_col=4); thick RIGHT on column H -> absolute col 7
             if row_idx < len(cleveland_data):
-                write_block(5, cleveland_data.iloc[row_idx], thickright_cols={9})
+                write_block(4, cleveland_data.iloc[row_idx], thickright_cols={7})
             else:
-                for c in range(5, 10):
-                    fmt = empty_format_thickright if c == 9 else empty_format  # thick-right on J
+                for c in range(4, 8):
+                    fmt = empty_format_thickright if c == 7 else empty_format
                     worksheet.write(excel_row, c, '', fmt)
 
-            # Dalton (block base_col=10); thick RIGHT on column O -> absolute col 14
+            # Dalton (block base_col=8); thick RIGHT on column L -> absolute col 11
             if row_idx < len(dalton_data):
-                write_block(10, dalton_data.iloc[row_idx], thickright_cols={14})
+                write_block(8, dalton_data.iloc[row_idx], thickright_cols={11})
             else:
-                for c in range(10, 15):
-                    fmt = empty_format_thickright if c == 14 else empty_format  # thick-right on O
+                for c in range(8, 12):
+                    fmt = empty_format_thickright if c == 11 else empty_format
                     worksheet.write(excel_row, c, '', fmt)
 
         # Totals row (after last data row)
@@ -502,10 +659,10 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
 
         # Optional labels under Agent Name columns
         worksheet.write(totals_row, 0, "Totals", total_label_format)
-        worksheet.write(totals_row, 5, "Totals", total_label_format)
-        worksheet.write(totals_row, 10, "Totals", total_label_format)
+        worksheet.write(totals_row, 4, "Totals", total_label_format)
+        worksheet.write(totals_row, 8, "Totals", total_label_format)
 
-        # Helper to write a SUM in a column (col_letter, start_row=3 to end_row=last_data_row+1 in Excel terms)
+        # Helper to write a SUM in a column
         def write_sum(col_idx, thick_right=False):
             col_letter = xlsx_col_letter(col_idx)
             start_row_excel = 3
@@ -514,35 +671,35 @@ def create_formatted_excel(chattanooga_data, cleveland_data, dalton_data):
             fmt = total_number_format_thickright if thick_right else total_number_format
             worksheet.write_formula(totals_row, col_idx, formula, fmt)
 
-        # Write sums for requested columns: B, E, G, J, L, O
-        write_sum(1, thick_right=False)   # B
-        write_sum(4, thick_right=True)    # E (thick RIGHT)
-        write_sum(6, thick_right=False)   # G
-        write_sum(9, thick_right=True)    # J (thick RIGHT)
-        write_sum(11, thick_right=False)  # L
-        write_sum(14, thick_right=True)   # O (thick RIGHT)
+        # Write sums for Calls and Text columns: B, D, F, H, J, L
+        write_sum(1, thick_right=False)   # B (Chatt Calls)
+        write_sum(3, thick_right=True)    # D (Chatt Text, thick RIGHT)
+        write_sum(5, thick_right=False)   # F (Cleve Calls)
+        write_sum(7, thick_right=True)    # H (Cleve Text, thick RIGHT)
+        write_sum(9, thick_right=False)   # J (Dalton Calls)
+        write_sum(11, thick_right=True)   # L (Dalton Text, thick RIGHT)
 
-        # ---------- Summary block in Q/R/S ----------
-        # Headers: R3 = Calls, S3 = Texts
-        worksheet.write(2, 17, "Calls", summary_header_fmt)  # R3
-        worksheet.write(2, 18, "Texts", summary_header_fmt)  # S3
-        # Labels: Q4/Q5/Q6
-        worksheet.write(3, 16, "Chattanooga", summary_label_fmt)  # Q4
-        worksheet.write(4, 16, "Cleveland", summary_label_fmt)    # Q5
-        worksheet.write(5, 16, "Dalton", summary_label_fmt)       # Q6
+        # ---------- Summary block in N/O/P ----------
+        # Headers: O3 = Calls, P3 = Texts
+        worksheet.write(2, 14, "Calls", summary_header_fmt)  # O3
+        worksheet.write(2, 15, "Texts", summary_header_fmt)  # P3
+        # Labels: N4/N5/N6
+        worksheet.write(3, 13, "Chattanooga", summary_label_fmt)  # N4
+        worksheet.write(4, 13, "Cleveland", summary_label_fmt)    # N5
+        worksheet.write(5, 13, "Dalton", summary_label_fmt)       # N6
 
         # Totals row Excel index (1-based)
         totals_row_excel = totals_row + 1
 
-        # Formulas pointing to the totals we just wrote (B/E, G/J, L/O)
-        worksheet.write_formula(3, 17, f"=B{totals_row_excel}", summary_number_fmt)  # R4 calls (Chatt)
-        worksheet.write_formula(3, 18, f"=E{totals_row_excel}", summary_number_fmt)  # S4 texts (Chatt)
+        # Formulas pointing to the totals we just wrote (B/D, F/H, J/L)
+        worksheet.write_formula(3, 14, f"=B{totals_row_excel}", summary_number_fmt)  # O4 calls (Chatt)
+        worksheet.write_formula(3, 15, f"=D{totals_row_excel}", summary_number_fmt)  # P4 texts (Chatt)
 
-        worksheet.write_formula(4, 17, f"=G{totals_row_excel}", summary_number_fmt)  # R5 calls (Cleve)
-        worksheet.write_formula(4, 18, f"=J{totals_row_excel}", summary_number_fmt)  # S5 texts (Cleve)
+        worksheet.write_formula(4, 14, f"=F{totals_row_excel}", summary_number_fmt)  # O5 calls (Cleve)
+        worksheet.write_formula(4, 15, f"=H{totals_row_excel}", summary_number_fmt)  # P5 texts (Cleve)
 
-        worksheet.write_formula(5, 17, f"=L{totals_row_excel}", summary_number_fmt)  # R6 calls (Dalton)
-        worksheet.write_formula(5, 18, f"=O{totals_row_excel}", summary_number_fmt)  # S6 texts (Dalton)
+        worksheet.write_formula(5, 14, f"=J{totals_row_excel}", summary_number_fmt)  # O6 calls (Dalton)
+        worksheet.write_formula(5, 15, f"=L{totals_row_excel}", summary_number_fmt)  # P6 texts (Dalton)
         # --------------------------------------------
 
         worksheet.freeze_panes(2, 0)
@@ -569,12 +726,13 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("📁 Upload Files")
-    st.markdown("Upload all 6 files (2 per location)  \n*All locations use WebEx + User Activity Performance*")
+    st.markdown("Upload all 7 files (3 for Chattanooga, 2 each for Cleveland & Dalton)")
 
     # File uploaders
     st.markdown("**Chattanooga Files:**")
     chatt_webex = st.file_uploader("Chattanooga WebEx", type=['xlsx', 'xls', 'csv'], key="chatt_webex")
     chatt_user_activity = st.file_uploader("Chattanooga User Activity Performance", type=['xlsx', 'xls', 'csv'], key="chatt_user_activity")
+    chatt_tecobi = st.file_uploader("Chattanooga Tecobi", type=['xlsx', 'xls', 'csv'], key="chatt_tecobi")
 
     st.markdown("**Cleveland Files:**")
     cleve_webex = st.file_uploader("Cleveland WebEx", type=['xlsx', 'xls', 'csv'], key="cleve_webex")
@@ -589,7 +747,7 @@ with col2:
     st.info("ℹ️ The following agents will be automatically excluded: AJ Dhir, Thomas Williams, Mark Moore, Nicole Farr")
 
     all_files_uploaded = all([
-        chatt_webex, chatt_user_activity,
+        chatt_webex, chatt_user_activity, chatt_tecobi,
         cleve_webex, cleve_user_activity,
         dalton_webex, dalton_user_activity
     ])
@@ -624,10 +782,11 @@ with col2:
                         # Fallback: just read normally
                         return pd.read_csv(io.BytesIO(content)) if name.endswith('.csv') else pd.read_excel(io.BytesIO(content))
 
-                    # Process Chattanooga with WebEx and User Activity Performance
+                    # Process Chattanooga with WebEx, User Activity, and Tecobi
                     chatt_webex_df = process_webex_file(read_file_find_header(chatt_webex), exclude_list=EXCLUDED_AGENTS)
                     chatt_user_activity_df = process_user_activity_file(read_file_find_header(chatt_user_activity), exclude_list=EXCLUDED_AGENTS)
-                    chattanooga_final = combine_cleveland_data(chatt_webex_df, chatt_user_activity_df)
+                    chatt_tecobi_df = process_tecobi_file(read_file_find_header(chatt_tecobi), exclude_list=EXCLUDED_AGENTS)
+                    chattanooga_final = combine_chattanooga_data(chatt_webex_df, chatt_user_activity_df, chatt_tecobi_df)
 
                     # Process Cleveland with WebEx and User Activity Performance
                     cleveland_webex_df = process_webex_file(read_file_find_header(cleve_webex), exclude_list=EXCLUDED_AGENTS)
@@ -664,10 +823,11 @@ with col2:
                 st.markdown("**Debug Information:**")
                 st.code(str(e))
     else:
-        st.warning("⚠️ Please upload all 6 files to continue")
+        st.warning("⚠️ Please upload all 7 files to continue")
         missing = []
-        if not chatt_webex:    missing.append("Chattanooga WebEx")
-        if not chatt_user_activity: missing.append("Chattanooga User Activity Performance")
+        if not chatt_webex:          missing.append("Chattanooga WebEx")
+        if not chatt_user_activity:  missing.append("Chattanooga User Activity Performance")
+        if not chatt_tecobi:         missing.append("Chattanooga Tecobi")
         if not cleve_webex:    missing.append("Cleveland WebEx")
         if not cleve_user_activity: missing.append("Cleveland User Activity Performance")
         if not dalton_webex:   missing.append("Dalton WebEx")
@@ -702,21 +862,26 @@ st.markdown("---")
 with st.expander("📖 Instructions & Info"):
     st.markdown("""
     ### How to Use:
-    1. **Upload all 6 files** - Files for each location as specified
+    1. **Upload all 7 files** - Files for each location as specified
     2. **Click Process** - The app will combine and validate the data
     3. **Download** - Get your formatted Excel report
 
     ### File Requirements:
-    - **All Locations**: WebEx (Employee Summary Report) and User Activity Performance files
+    - **Chattanooga**: WebEx (Employee Summary Report) + User Activity Performance + Tecobi report
+    - **Cleveland & Dalton**: WebEx (Employee Summary Report) + User Activity Performance
 
     ### 30/30 Validation:
     - Agent name is highlighted if **Calls < 30 OR Text < 30**
     - **Calls** cell highlighted red if **Calls < 30**
     - **Text** cell highlighted red if **Text < 30**
-    - (Talk time cells are not highlighted)
 
     ### Data Processing:
-    **All Locations (Chattanooga, Cleveland, Dalton):**
+    **Chattanooga:**
+    - **Calls** = WebEx "Outgoing" + Tecobi "Unique Outbound"
+    - **Talk Time** = WebEx "Average Time"
+    - **Text** = User Activity Performance "Texts" + Tecobi "External SMS"
+
+    **Cleveland & Dalton:**
     - **Calls** = WebEx "Outgoing"
     - **Talk Time** = WebEx "Average Time"
     - **Text** = User Activity Performance "Texts"
