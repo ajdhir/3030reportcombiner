@@ -201,11 +201,30 @@ def process_webex_file(df, exclude_list=None):
 
     processed = pd.DataFrame()
     processed['Agent Name'] = df['Agent Name']
-    processed['WebEx_Outgoing'] = pd.to_numeric(df['Outgoing'], errors='coerce').fillna(0)
+
+    # Find the outgoing/outbound calls column (handle old and new WebEx formats)
+    outgoing_col = None
+    for col in df.columns:
+        col_lower = col.lower().strip()
+        if col_lower == 'outgoing':
+            outgoing_col = col
+            break
+        if col_lower == 'total outbound':
+            outgoing_col = col
+            break
+    if outgoing_col is None:
+        raise ValueError(f"WebEx file must have an 'Outgoing' or 'Total Outbound' column. Found columns: {list(df.columns)}")
+    processed['WebEx_Outgoing'] = pd.to_numeric(df[outgoing_col], errors='coerce').fillna(0)
 
     # Parse Average Time (format: H:MM:SS or M:SS)
+    # New format has 'Total Time' instead of 'Average Time' — compute average from total
     if 'Average Time' in df.columns:
         processed['WebEx_Avg_Time'] = df['Average Time'].apply(parse_time_to_excel)
+    elif 'Total Time' in df.columns:
+        total_time_excel = df['Total Time'].apply(parse_time_to_excel)
+        outgoing_counts = processed['WebEx_Outgoing'].replace(0, np.nan)
+        processed['WebEx_Avg_Time'] = total_time_excel / outgoing_counts
+        processed['WebEx_Avg_Time'] = processed['WebEx_Avg_Time'].fillna(0).replace([np.inf, -np.inf], 0)
     else:
         processed['WebEx_Avg_Time'] = 0
 
