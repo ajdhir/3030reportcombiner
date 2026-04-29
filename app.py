@@ -843,8 +843,12 @@ with col2:
                         if name.endswith('.csv'):
                             lines = content.decode('utf-8', errors='ignore').split('\n')
                             for i, line in enumerate(lines):
-                                # Check if line starts with "Name" (quoted or unquoted)
-                                if line.startswith('"Name"') or line.startswith('Name,'):
+                                stripped = line.lstrip()
+                                # Old WebEx format: starts with Name
+                                # New WebEx format: starts with Index,Name
+                                # User Activity / Tecobi: starts with Name
+                                if (stripped.startswith('"Name"') or stripped.startswith('Name,')
+                                        or stripped.startswith('"Index","Name"') or stripped.startswith('Index,Name,')):
                                     # Use BytesIO to read from content, not the original file
                                     return pd.read_csv(io.BytesIO(content), skiprows=i)
 
